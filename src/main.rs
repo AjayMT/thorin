@@ -1,24 +1,17 @@
 
 extern crate gimli;
-extern crate object;
-extern crate memmap;
 extern crate fallible_iterator;
+extern crate goblin;
 
 
-use object::Object;
-use object::ObjectSection;
 use fallible_iterator::FallibleIterator;
-
-
-fn load_section<'a>(file: &object::File<'a>, section_name: &str) -> std::borrow::Cow<'a, [u8]> {
-    return file.section_by_name(section_name).unwrap().data();
-}
+use std::io::Read;
+use std::collections::HashMap;
 
 
 fn main() {
     let file_path = std::env::args().nth(1).expect("Missing argument");
-
-    let file = match std::fs::File::open(&file_path) {
+    let mut file = match std::fs::File::open(&file_path) {
         Ok(file) => file,
         Err(err) => {
             println!("Error opening file '{}': {}", &file_path, err);
@@ -26,24 +19,28 @@ fn main() {
         }
     };
 
-    let mmapped_file = match unsafe { memmap::Mmap::map(&file) } {
-        Ok(mmapped_file) => mmapped_file,
-        Err(err) => {
-            println!("Could not map file '{}': {}", &file_path, err);
-            return;
-        }
-    };
+    let mut buffer = Vec::new();
+    file.read_to_end(&mut buffer).unwrap();
+    let data = goblin::mach::MachO::parse(&buffer, 0).unwrap();
 
-    let parsed_file = match object::File::parse(&*mmapped_file) {
-        Ok(parsed_file) => parsed_file,
-        Err(err) => {
-            println!("Error parsing file '{}': {}", &file_path, err);
-            return;
+    let mut dwarf_sections: HashMap<String, &[u8]> = HashMap::new();
+    for segment_sections in data.segments.sections() {
+        for section in segment_sections {
+            let (s, s_data) = section.unwrap();
+            let s_segname = std::str::from_utf8(&s.segname)
+                .unwrap()
+                .to_string();
+            let s_sectname = std::str::from_utf8(&s.sectname)
+                .unwrap()
+                .to_string();
+            if s_segname.trim_matches(char::from(0)) == "__DWARF" {
+                dwarf_sections.insert(s_sectname.trim_matches(char::from(0)).to_string(), &s_data);
+            }
         }
-    };
+    }
 
-    let s_debug_info = load_section(&parsed_file, ".debug_info");
-    let s_debug_abbrev = load_section(&parsed_file, ".debug_abbrev");
+    let s_debug_info = dwarf_sections.get("__debug_info").unwrap();
+    let s_debug_abbrev = dwarf_sections.get("__debug_abbrev").unwrap();
 
     // gimli stuff
     let debug_info = gimli::DebugInfo::new(&s_debug_info, gimli::LittleEndian);
