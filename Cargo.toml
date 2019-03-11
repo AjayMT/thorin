@@ -1,0 +1,10 @@
+[package]
+name = "thorin"
+version = "0.1.0"
+authors = ["Ajay MT <ajay.tatachar@gmail.com>"]
+
+[dependencies]
+gimli = "0.17.0"
+object = "0.11.0"
+memmap = "0.7.0"
+fallible-iterator = "0.1.6"
