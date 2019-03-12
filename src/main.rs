@@ -56,7 +56,7 @@ fn main() {
     let debug_info = load_section!(DebugInfo, "__debug_info");
     let debug_abbrev = load_section!(DebugAbbrev, "__debug_abbrev");
     let debug_line = load_section!(DebugLine, "__debug_line");
-    let debug_str = load_section!(DebugStr, "__debug_line");
+    let debug_str = load_section!(DebugStr, "__debug_str");
     let dwarf = gimli::Dwarf {
         debug_info,
         debug_abbrev,
