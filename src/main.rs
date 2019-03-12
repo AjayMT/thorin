@@ -10,19 +10,23 @@ use std::collections::HashMap;
 
 
 fn main() {
+    // open file
     let file_path = std::env::args().nth(1).expect("Missing argument");
     let mut file = match std::fs::File::open(&file_path) {
         Ok(file) => file,
         Err(err) => {
-            println!("Error opening file '{}': {}", &file_path, err);
+            println!("Error opening file '{}': {}", file_path, err);
             return;
         }
     };
 
+    // parse Mach-O
+    // TODO: support ELF, other formats
     let mut buffer = Vec::new();
     file.read_to_end(&mut buffer).unwrap();
     let data = goblin::mach::MachO::parse(&buffer, 0).unwrap();
 
+    // read dwarf sections
     let mut dwarf_sections: HashMap<String, &[u8]> = HashMap::new();
     for segment_sections in data.segments.sections() {
         for section in segment_sections {
@@ -39,22 +43,29 @@ fn main() {
         }
     }
 
-    let s_debug_info = dwarf_sections.get("__debug_info").expect("No debug_info found");
-    let s_debug_abbrev = dwarf_sections.get("__debug_abbrev").expect("No debug_abbrev found");
-    let s_debug_line = dwarf_sections.get("__debug_line").expect("No debug_line found");
+    macro_rules! load_section {
+        ($x:ident, $s:expr) => (
+            gimli::$x::new(
+                dwarf_sections.get($s).expect("section not found"),
+                gimli::LittleEndian
+            );
+        )
+    }
 
-    // gimli stuff
-    let debug_info = gimli::DebugInfo::new(&s_debug_info, gimli::LittleEndian);
-    let debug_abbrev = gimli::DebugAbbrev::new(&s_debug_abbrev, gimli::LittleEndian);
-    let debug_line = gimli::DebugLine::new(&s_debug_line, gimli::LittleEndian);
+    // parse dwarf sections with gimli
+    let debug_info = load_section!(DebugInfo, "__debug_info");
+    let debug_abbrev = load_section!(DebugAbbrev, "__debug_abbrev");
+    let debug_line = load_section!(DebugLine, "__debug_line");
+    let debug_str = load_section!(DebugStr, "__debug_line");
     let dwarf = gimli::Dwarf {
         debug_info,
         debug_abbrev,
         debug_line,
+        debug_str,
         ..Default::default()
     };
 
-    let units = dwarf.units().collect::<Vec<_>>().unwrap();
+    let units: Vec<_> = dwarf.units().collect().unwrap();
     for header in units {
         let unit = match dwarf.unit(header) {
             Ok(r) => r,
@@ -64,6 +75,14 @@ fn main() {
             }
         };
 
-        println!("unit name {:?}", unit.name.unwrap());
+        let mut entries = unit.entries();
+        while let Some((_, entry)) = entries.next_dfs().unwrap() {
+            if entry.tag() == gimli::DW_TAG_variable {
+                let attrs: Vec<_> = entry.attrs().collect().unwrap();
+                for attr in attrs {
+                    println!("attr: {:?}", attr);
+                }
+            }
+        }
     }
 }
