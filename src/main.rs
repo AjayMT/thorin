@@ -80,7 +80,15 @@ fn main() {
             if entry.tag() == gimli::DW_TAG_variable {
                 let attrs: Vec<_> = entry.attrs().collect().unwrap();
                 for attr in attrs {
-                    println!("attr: {:?}", attr);
+                    println!("attr name: {:?}", attr.name().static_string().unwrap());
+                    let attr_value = match dwarf.attr_string(&unit, attr.value()) {
+                        Ok(r) => r.to_string().unwrap(),
+                        Err(_) => {
+                            println!("non string attr {:?}", attr.value());
+                            continue;
+                        }
+                    };
+                    println!("attr value: {:?}", attr_value);
                 }
             }
         }
