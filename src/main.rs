@@ -39,15 +39,18 @@ fn main() {
         }
     }
 
-    let s_debug_info = dwarf_sections.get("__debug_info").unwrap();
-    let s_debug_abbrev = dwarf_sections.get("__debug_abbrev").unwrap();
+    let s_debug_info = dwarf_sections.get("__debug_info").expect("No debug_info found");
+    let s_debug_abbrev = dwarf_sections.get("__debug_abbrev").expect("No debug_abbrev found");
+    let s_debug_line = dwarf_sections.get("__debug_line").expect("No debug_line found");
 
     // gimli stuff
     let debug_info = gimli::DebugInfo::new(&s_debug_info, gimli::LittleEndian);
     let debug_abbrev = gimli::DebugAbbrev::new(&s_debug_abbrev, gimli::LittleEndian);
+    let debug_line = gimli::DebugLine::new(&s_debug_line, gimli::LittleEndian);
     let dwarf = gimli::Dwarf {
         debug_info,
         debug_abbrev,
+        debug_line,
         ..Default::default()
     };
 
