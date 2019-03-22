@@ -9,6 +9,80 @@ use std::io::Read;
 use std::collections::HashMap;
 
 
+struct Variable<'a> {
+    name: &'a str,
+    offset: i64
+}
+
+
+struct Scope<'a> {
+    name: Option<&'a str>,
+    variables: Vec<Variable<'a>>,
+    scopes: Vec<Scope<'a>>
+}
+
+
+fn construct_global_scope<'a>(dwarf: &'a gimli::Dwarf<gimli::EndianSlice<gimli::LittleEndian>>) -> Scope<'a> {
+    let mut scope = Scope { name: None, variables: Vec::new(), scopes: Vec::new() };
+
+    let units: Vec<_> = dwarf.units().collect().unwrap();
+    for header in units {
+        let unit = match dwarf.unit(header) {
+            Ok(r) => r,
+            Err(err) => {
+                println!("error constructing unit for header {:?}: {}", header, err);
+                continue;
+            }
+        };
+
+        let mut entries = unit.entries();
+        while let Some((d_depth, entry)) = entries.next_dfs().unwrap() {
+            if entry.tag() == gimli::DW_TAG_variable {
+                let attrs: Vec<_> = entry.attrs().collect().unwrap();
+                let mut name: Option<&str> = None;
+                let mut offset: Option<i64> = None;
+                for attr in attrs {
+                    let attr_name = attr.name().static_string().unwrap();
+                    let attr_value = attr.value();
+                    match attr_name {
+                        "DW_AT_name" => {
+                            name = Some(dwarf.attr_string(&unit, attr_value).unwrap().to_string().unwrap())
+                        },
+                        "DW_AT_location" => {
+                            let data = match attr_value {
+                                gimli::AttributeValue::Exprloc(r) => r,
+                                _ => { continue; }
+                            };
+                            let mut eval = data.evaluation(unit.encoding());
+                            let mut eval_state = eval.evaluate().unwrap();
+                            while eval_state != gimli::EvaluationResult::Complete {
+                                match eval_state {
+                                    gimli::EvaluationResult::RequiresFrameBase => {
+                                        eval_state = eval.resume_with_frame_base(0).unwrap();
+                                    },
+                                    _ => unimplemented!()
+                                }
+                            }
+                            let eval_result = eval.result();
+                            if let gimli::Location::Address { address: addr } = eval_result[0].location {
+                                offset = Some(addr as i64)
+                            }
+                        },
+                        _ => { continue; }
+                    }
+                }
+
+                if name.is_some() && offset.is_some() {
+                    scope.variables.push(Variable { name: name.unwrap(), offset: offset.unwrap() });
+                }
+            }
+        }
+    }
+
+    return scope;
+}
+
+
 fn main() {
     // open file
     let file_path = std::env::args().nth(1).expect("Missing argument");
@@ -21,7 +95,6 @@ fn main() {
     };
 
     // parse Mach-O
-    // TODO: support ELF, other formats
     let mut buffer = Vec::new();
     file.read_to_end(&mut buffer).unwrap();
     let data = goblin::mach::MachO::parse(&buffer, 0).unwrap();
@@ -65,32 +138,10 @@ fn main() {
         ..Default::default()
     };
 
-    let units: Vec<_> = dwarf.units().collect().unwrap();
-    for header in units {
-        let unit = match dwarf.unit(header) {
-            Ok(r) => r,
-            Err(err) => {
-                println!("error contructing unit for header {:?}: {}", header, err);
-                continue;
-            }
-        };
+    let global_scope = construct_global_scope(&dwarf);
 
-        let mut entries = unit.entries();
-        while let Some((_, entry)) = entries.next_dfs().unwrap() {
-            if entry.tag() == gimli::DW_TAG_variable {
-                let attrs: Vec<_> = entry.attrs().collect().unwrap();
-                for attr in attrs {
-                    println!("attr name: {:?}", attr.name().static_string().unwrap());
-                    let attr_value = match dwarf.attr_string(&unit, attr.value()) {
-                        Ok(r) => r.to_string().unwrap(),
-                        Err(_) => {
-                            println!("non string attr {:?}", attr.value());
-                            continue;
-                        }
-                    };
-                    println!("attr value: {:?}", attr_value);
-                }
-            }
-        }
+    println!("global scope:");
+    for var in global_scope.variables {
+        println!("{}: fbreg {}", var.name, var.offset);
     }
 }

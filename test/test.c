@@ -2,6 +2,10 @@
 void func()
 {
   int var = 12;
+  if (var) {
+    int b = 2;
+    ++b;
+  }
 }
 
 int main(int argc, char *argv[])
