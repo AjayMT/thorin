@@ -37,7 +37,7 @@ fn construct_global_scope<'a>(dwarf: &'a gimli::Dwarf<gimli::EndianSlice<gimli::
 
         let mut entries = unit.entries();
         while let Some((d_depth, entry)) = entries.next_dfs().unwrap() {
-            if entry.tag() == gimli::DW_TAG_variable {
+            if entry.tag() == gimli::DW_TAG_variable || entry.tag() == gimli::DW_TAG_formal_parameter {
                 let attrs: Vec<_> = entry.attrs().collect().unwrap();
                 let mut name: Option<&str> = None;
                 let mut offset: Option<i64> = None;
