@@ -2,12 +2,19 @@
 extern crate gimli;
 extern crate fallible_iterator;
 extern crate goblin;
+extern crate libc;
 
 
 use fallible_iterator::FallibleIterator;
 use std::io::Read;
 use std::path::Path;
+use std::process::Command;
 use std::collections::HashMap;
+
+
+extern {
+    fn setup(child: libc::pid_t);
+}
 
 
 struct Variable<'a> {
@@ -136,12 +143,21 @@ fn get_types<'a>(dwarf: &'a gimli::Dwarf<gimli::EndianSlice<gimli::LittleEndian>
 }
 
 
+fn exec_prog(exec_path: &str) {
+    let child_pid = Command::new(exec_path).spawn().expect("failed to start program").id();
+    let c_child_pid: libc::pid_t = child_pid as libc::pid_t;
+    unsafe { setup(c_child_pid); }
+}
+
+
 fn main() {
     // open file
     let exec_path = std::env::args().nth(1).expect("Missing argument");
     let mut dsym_path = exec_path.clone();
     dsym_path.push_str(".dSYM/Contents/Resources/DWARF/");
     dsym_path.push_str(Path::new(&exec_path).file_name().unwrap().to_str().unwrap());
+
+    println!("loading DWARF file at {}...", dsym_path);
 
     let mut file = match std::fs::File::open(&dsym_path) {
         Ok(file) => file,
@@ -198,13 +214,8 @@ fn main() {
     let global_scope = construct_global_scope(&dwarf);
     let types = get_types(&dwarf);
 
-    println!("global scope:");
-    for var in global_scope.variables {
-        println!("{}: fbreg {}", var.name, var.offset);
-    }
+    println!("done.");
 
-    println!("types:");
-    for (name, size) in types {
-        println!("type {} is {} bytes", name, size);
-    }
+    println!("executing program...");
+    exec_prog(&exec_path);
 }

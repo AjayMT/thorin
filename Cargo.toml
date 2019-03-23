@@ -1,4 +1,6 @@
 [package]
+links = "thorin"
+build = "build.rs"
 name = "thorin"
 version = "0.1.0"
 authors = ["Ajay MT <ajay.tatachar@gmail.com>"]
@@ -7,3 +9,7 @@ authors = ["Ajay MT <ajay.tatachar@gmail.com>"]
 gimli = "0.17.0"
 goblin = "0.0.21"
 fallible-iterator = "0.1.6"
+libc = "0.2.50"
+
+[build-dependencies]
+cc = "1.0"

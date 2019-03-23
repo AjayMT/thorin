@@ -22,5 +22,9 @@ int main(int argc, char *argv[])
   float pi = 3.14;
   func();
   struct my_type my_obj = { .val = 42, .baz = 'F' };
+
+  int *n = 0;
+  *n = 12;
+
   return 0;
 }
