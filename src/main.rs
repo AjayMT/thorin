@@ -22,64 +22,111 @@ struct Scope<'a> {
 }
 
 
+macro_rules! dwarf_iter_entries {
+    ($dwarf:ident, $unit:ident, $d_depth:ident, $entry:ident, $body:block) => {
+        {
+            let units: Vec<_> = $dwarf.units().collect().unwrap();
+            for header in units {
+                let $unit = match $dwarf.unit(header) {
+                    Ok(r) => r,
+                    Err(err) => {
+                        println!("error constructing unit for header {:?}: {}", header, err);
+                        continue;
+                    }
+                };
+
+                let mut entries = $unit.entries();
+                while let Some(($d_depth, $entry)) = entries.next_dfs().unwrap()
+                    $body
+            }
+        }
+    };
+}
+
+
 fn construct_global_scope<'a>(dwarf: &'a gimli::Dwarf<gimli::EndianSlice<gimli::LittleEndian>>) -> Scope<'a> {
     let mut scope = Scope { name: None, variables: Vec::new(), scopes: Vec::new() };
 
-    let units: Vec<_> = dwarf.units().collect().unwrap();
-    for header in units {
-        let unit = match dwarf.unit(header) {
-            Ok(r) => r,
-            Err(err) => {
-                println!("error constructing unit for header {:?}: {}", header, err);
-                continue;
-            }
-        };
+    dwarf_iter_entries!(dwarf, unit, d_depth, entry, {
+        if entry.tag() != gimli::DW_TAG_variable && entry.tag() != gimli::DW_TAG_formal_parameter {
+            continue;
+        }
 
-        let mut entries = unit.entries();
-        while let Some((d_depth, entry)) = entries.next_dfs().unwrap() {
-            if entry.tag() == gimli::DW_TAG_variable || entry.tag() == gimli::DW_TAG_formal_parameter {
-                let attrs: Vec<_> = entry.attrs().collect().unwrap();
-                let mut name: Option<&str> = None;
-                let mut offset: Option<i64> = None;
-                for attr in attrs {
-                    let attr_name = attr.name().static_string().unwrap();
-                    let attr_value = attr.value();
-                    match attr_name {
-                        "DW_AT_name" => {
-                            name = Some(dwarf.attr_string(&unit, attr_value).unwrap().to_string().unwrap())
-                        },
-                        "DW_AT_location" => {
-                            let data = match attr_value {
-                                gimli::AttributeValue::Exprloc(r) => r,
-                                _ => { continue; }
-                            };
-                            let mut eval = data.evaluation(unit.encoding());
-                            let mut eval_state = eval.evaluate().unwrap();
-                            while eval_state != gimli::EvaluationResult::Complete {
-                                match eval_state {
-                                    gimli::EvaluationResult::RequiresFrameBase => {
-                                        eval_state = eval.resume_with_frame_base(0).unwrap();
-                                    },
-                                    _ => unimplemented!()
-                                }
-                            }
-                            let eval_result = eval.result();
-                            if let gimli::Location::Address { address: addr } = eval_result[0].location {
-                                offset = Some(addr as i64)
-                            }
-                        },
+        let attrs: Vec<_> = entry.attrs().collect().unwrap();
+        let mut name: Option<&str> = None;
+        let mut offset: Option<i64> = None;
+        for attr in attrs {
+            let attr_name = attr.name().static_string().unwrap();
+            let attr_value = attr.value();
+            match attr_name {
+                "DW_AT_name" => {
+                    name = Some(dwarf.attr_string(&unit, attr_value).unwrap().to_string().unwrap())
+                },
+                "DW_AT_location" => {
+                    let data = match attr_value {
+                        gimli::AttributeValue::Exprloc(r) => r,
                         _ => { continue; }
+                    };
+                    let mut eval = data.evaluation(unit.encoding());
+                    let mut eval_state = eval.evaluate().unwrap();
+                    while eval_state != gimli::EvaluationResult::Complete {
+                        match eval_state {
+                            gimli::EvaluationResult::RequiresFrameBase => {
+                                eval_state = eval.resume_with_frame_base(0).unwrap();
+                            },
+                            _ => unimplemented!()
+                        }
                     }
-                }
-
-                if name.is_some() && offset.is_some() {
-                    scope.variables.push(Variable { name: name.unwrap(), offset: offset.unwrap() });
-                }
+                    let eval_result = eval.result();
+                    if let gimli::Location::Address { address: addr } = eval_result[0].location {
+                        offset = Some(addr as i64)
+                    }
+                },
+                _ => { continue; }
             }
         }
-    }
+
+        if name.is_some() && offset.is_some() {
+            scope.variables.push(Variable { name: name.unwrap(), offset: offset.unwrap() });
+        }
+    });
 
     return scope;
+}
+
+
+fn get_types<'a>(dwarf: &'a gimli::Dwarf<gimli::EndianSlice<gimli::LittleEndian>>) -> HashMap<&'a str, u64> {
+    let mut types: HashMap<&str, u64> = HashMap::new();
+    types.insert("*", 8);
+
+    dwarf_iter_entries!(dwarf, unit, d_depth, entry, {
+        if entry.tag() != gimli::DW_TAG_base_type { continue; }
+
+        let attrs: Vec<_> = entry.attrs().collect().unwrap();
+        let mut name: Option<&str> = None;
+        let mut size: Option<u64> = None;
+        for attr in attrs {
+            let attr_name = attr.name().static_string().unwrap();
+            let attr_value = attr.value();
+            match attr_name {
+                "DW_AT_name" => {
+                    name = Some(dwarf.attr_string(&unit, attr_value).unwrap().to_string().unwrap());
+                },
+                "DW_AT_byte_size" => {
+                    if let gimli::AttributeValue::Udata(r_size) = attr_value {
+                        size = Some(r_size);
+                    }
+                },
+                _ => { continue; }
+            }
+        }
+
+        if name.is_some() && size.is_some() {
+            types.insert(name.unwrap(), size.unwrap());
+        }
+    });
+
+    return types;
 }
 
 
@@ -139,9 +186,15 @@ fn main() {
     };
 
     let global_scope = construct_global_scope(&dwarf);
+    let types = get_types(&dwarf);
 
     println!("global scope:");
     for var in global_scope.variables {
         println!("{}: fbreg {}", var.name, var.offset);
+    }
+
+    println!("types:");
+    for (name, size) in types {
+        println!("type {} is {} bytes", name, size);
     }
 }

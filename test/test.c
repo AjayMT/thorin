@@ -1,9 +1,12 @@
 
+#include <stdint.h>
+
+
 void func()
 {
-  int var = 12;
+  int64_t var = 12;
   if (var) {
-    int b = 2;
+    uintptr_t b = 2;
     ++b;
   }
 }
