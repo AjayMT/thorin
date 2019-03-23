@@ -6,6 +6,7 @@ extern crate goblin;
 
 use fallible_iterator::FallibleIterator;
 use std::io::Read;
+use std::path::Path;
 use std::collections::HashMap;
 
 
@@ -44,6 +45,23 @@ macro_rules! dwarf_iter_entries {
 }
 
 
+macro_rules! dwarf_find_attr {
+    ($entry:ident, $attr_value_ident:ident, $attr_name_expr:expr, $body:block) => {
+        {
+            let attrs: Vec<_> = $entry.attrs().collect().unwrap();
+            for attr in attrs {
+                let attr_name = attr.name().static_string().unwrap();
+                if attr_name == $attr_name_expr {
+                    let $attr_value_ident = attr.value();
+                    $body;
+                    break;
+                }
+            }
+        }
+    };
+}
+
+
 fn construct_global_scope<'a>(dwarf: &'a gimli::Dwarf<gimli::EndianSlice<gimli::LittleEndian>>) -> Scope<'a> {
     let mut scope = Scope { name: None, variables: Vec::new(), scopes: Vec::new() };
 
@@ -52,39 +70,33 @@ fn construct_global_scope<'a>(dwarf: &'a gimli::Dwarf<gimli::EndianSlice<gimli::
             continue;
         }
 
-        let attrs: Vec<_> = entry.attrs().collect().unwrap();
         let mut name: Option<&str> = None;
         let mut offset: Option<i64> = None;
-        for attr in attrs {
-            let attr_name = attr.name().static_string().unwrap();
-            let attr_value = attr.value();
-            match attr_name {
-                "DW_AT_name" => {
-                    name = Some(dwarf.attr_string(&unit, attr_value).unwrap().to_string().unwrap())
-                },
-                "DW_AT_location" => {
-                    let data = match attr_value {
-                        gimli::AttributeValue::Exprloc(r) => r,
-                        _ => { continue; }
-                    };
-                    let mut eval = data.evaluation(unit.encoding());
-                    let mut eval_state = eval.evaluate().unwrap();
-                    while eval_state != gimli::EvaluationResult::Complete {
-                        match eval_state {
-                            gimli::EvaluationResult::RequiresFrameBase => {
-                                eval_state = eval.resume_with_frame_base(0).unwrap();
-                            },
-                            _ => unimplemented!()
-                        }
-                    }
-                    let eval_result = eval.result();
-                    if let gimli::Location::Address { address: addr } = eval_result[0].location {
-                        offset = Some(addr as i64)
-                    }
-                },
+
+        dwarf_find_attr!(entry, attr_value, "DW_AT_name", {
+            name = Some(dwarf.attr_string(&unit, attr_value).unwrap().to_string().unwrap());
+        });
+
+        dwarf_find_attr!(entry, attr_value, "DW_AT_location", {
+            let data = match attr_value {
+                gimli::AttributeValue::Exprloc(r) => r,
                 _ => { continue; }
+            };
+            let mut eval = data.evaluation(unit.encoding());
+            let mut eval_state = eval.evaluate().unwrap();
+            while eval_state != gimli::EvaluationResult::Complete {
+                match eval_state {
+                    gimli::EvaluationResult::RequiresFrameBase => {
+                        eval_state = eval.resume_with_frame_base(0).unwrap();
+                    },
+                    _ => unimplemented!()
+                }
             }
-        }
+            let eval_result = eval.result();
+            if let gimli::Location::Address { address: addr } = eval_result[0].location {
+                offset = Some(addr as i64)
+            }
+        });
 
         if name.is_some() && offset.is_some() {
             scope.variables.push(Variable { name: name.unwrap(), offset: offset.unwrap() });
@@ -102,24 +114,18 @@ fn get_types<'a>(dwarf: &'a gimli::Dwarf<gimli::EndianSlice<gimli::LittleEndian>
     dwarf_iter_entries!(dwarf, unit, d_depth, entry, {
         if entry.tag() != gimli::DW_TAG_base_type { continue; }
 
-        let attrs: Vec<_> = entry.attrs().collect().unwrap();
         let mut name: Option<&str> = None;
         let mut size: Option<u64> = None;
-        for attr in attrs {
-            let attr_name = attr.name().static_string().unwrap();
-            let attr_value = attr.value();
-            match attr_name {
-                "DW_AT_name" => {
-                    name = Some(dwarf.attr_string(&unit, attr_value).unwrap().to_string().unwrap());
-                },
-                "DW_AT_byte_size" => {
-                    if let gimli::AttributeValue::Udata(r_size) = attr_value {
-                        size = Some(r_size);
-                    }
-                },
-                _ => { continue; }
+
+        dwarf_find_attr!(entry, attr_value, "DW_AT_name", {
+            name = Some(dwarf.attr_string(&unit, attr_value).unwrap().to_string().unwrap());
+        });
+
+        dwarf_find_attr!(entry, attr_value, "DW_AT_byte_size", {
+            if let gimli::AttributeValue::Udata(r_size) = attr_value {
+                size = Some(r_size);
             }
-        }
+        });
 
         if name.is_some() && size.is_some() {
             types.insert(name.unwrap(), size.unwrap());
@@ -132,11 +138,15 @@ fn get_types<'a>(dwarf: &'a gimli::Dwarf<gimli::EndianSlice<gimli::LittleEndian>
 
 fn main() {
     // open file
-    let file_path = std::env::args().nth(1).expect("Missing argument");
-    let mut file = match std::fs::File::open(&file_path) {
+    let exec_path = std::env::args().nth(1).expect("Missing argument");
+    let mut dsym_path = exec_path.clone();
+    dsym_path.push_str(".dSYM/Contents/Resources/DWARF/");
+    dsym_path.push_str(Path::new(&exec_path).file_name().unwrap().to_str().unwrap());
+
+    let mut file = match std::fs::File::open(&dsym_path) {
         Ok(file) => file,
         Err(err) => {
-            println!("Error opening file '{}': {}", file_path, err);
+            println!("Error opening file '{}': {}", dsym_path, err);
             return;
         }
     };
