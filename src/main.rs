@@ -31,7 +31,7 @@ struct Variable {
 
 #[allow(unused)]
 struct Scope {
-    name: String,
+    name: Option<String>,
     variables: HashMap<String, Variable>,
     scopes: Vec<Scope>
 }
@@ -78,7 +78,7 @@ macro_rules! dwarf_find_attr {
 
 fn construct_scope<'a>(dwarf: &'a gimli::Dwarf<gimli::EndianSlice<gimli::LittleEndian>>) -> Scope {
     let mut scope: Scope = Scope {
-        name: String::from(""),
+        name: None,
         variables: HashMap::new(),
         scopes: Vec::new()
     };
