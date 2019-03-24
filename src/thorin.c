@@ -9,6 +9,13 @@
 #include "mig/mach_exc.h"
 
 
+typedef void (*exc_callback)(void*, uintptr_t);
+static exc_callback global_cb;
+static mach_port_t global_task;
+static mach_port_t global_task_exc;
+static void *global_scope;
+
+
 extern boolean_t mach_exc_server (mach_msg_header_t *msg, mach_msg_header_t *reply);
 
 
@@ -51,13 +58,14 @@ kern_return_t catch_mach_exception_raise_state_identity (
   mach_msg_type_number_t *new_stateCnt
   )
 {
-  printf("caught exception\n");
+  uintptr_t rbp = ((x86_thread_state64_t *)old_state)->__rbp;
+  global_cb(global_scope, rbp);
 
   return KERN_FAILURE;
 }
 
 
-void setup(pid_t child)
+void setup(pid_t child, exc_callback cb, void *scope)
 {
   mach_port_t task;
   mach_port_t task_exception_port;
@@ -98,6 +106,11 @@ void setup(pid_t child)
     return;
   }
 
+  global_task = task;
+  global_task_exc = task_exception_port;
+  global_cb = cb;
+  global_scope = scope;
+
   size_t req_size = sizeof(union __RequestUnion__mach_exc_subsystem);
   size_t rep_size = sizeof(union __ReplyUnion__mach_exc_subsystem);
   mach_msg_server(
@@ -106,4 +119,16 @@ void setup(pid_t child)
     task_exception_port,
     0
     );
+}
+
+
+void read_addr(void *buffer, uintptr_t address, size_t size)
+{
+  kern_return_t kret;
+  mach_vm_size_t local_size = size;
+  kret = mach_vm_read_overwrite(global_task, address, (mach_vm_size_t)size, (mach_vm_address_t)buffer, &local_size);
+  if (kret != KERN_SUCCESS) {
+    printf("mach_vm_read failed: %s\n", mach_error_string(kret));
+    return;
+  }
 }

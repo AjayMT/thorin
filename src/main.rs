@@ -1,32 +1,39 @@
 
+#![allow(improper_ctypes)]
+
 extern crate gimli;
 extern crate fallible_iterator;
 extern crate goblin;
 extern crate libc;
+#[macro_use] extern crate text_io;
 
 
 use fallible_iterator::FallibleIterator;
 use std::io::Read;
+use std::io::Write;
 use std::path::Path;
 use std::process::Command;
 use std::collections::HashMap;
 
 
 extern {
-    fn setup(child: libc::pid_t);
+    fn setup(child: libc::pid_t, callback: unsafe extern fn(*mut Scope, libc::uintptr_t), scope: *mut Scope);
+    fn read_addr(buffer: *mut libc::c_void, address: libc::uintptr_t, size: libc::size_t);
 }
 
 
-struct Variable<'a> {
-    name: &'a str,
+#[allow(unused)]
+struct Variable {
+    name: String,
     offset: i64
 }
 
 
-struct Scope<'a> {
-    name: Option<&'a str>,
-    variables: Vec<Variable<'a>>,
-    scopes: Vec<Scope<'a>>
+#[allow(unused)]
+struct Scope {
+    name: String,
+    variables: HashMap<String, Variable>,
+    scopes: Vec<Scope>
 }
 
 
@@ -69,8 +76,12 @@ macro_rules! dwarf_find_attr {
 }
 
 
-fn construct_global_scope<'a>(dwarf: &'a gimli::Dwarf<gimli::EndianSlice<gimli::LittleEndian>>) -> Scope<'a> {
-    let mut scope = Scope { name: None, variables: Vec::new(), scopes: Vec::new() };
+fn construct_scope<'a>(dwarf: &'a gimli::Dwarf<gimli::EndianSlice<gimli::LittleEndian>>) -> Scope {
+    let mut scope: Scope = Scope {
+        name: String::from(""),
+        variables: HashMap::new(),
+        scopes: Vec::new()
+    };
 
     dwarf_iter_entries!(dwarf, unit, d_depth, entry, {
         if entry.tag() != gimli::DW_TAG_variable && entry.tag() != gimli::DW_TAG_formal_parameter {
@@ -106,7 +117,10 @@ fn construct_global_scope<'a>(dwarf: &'a gimli::Dwarf<gimli::EndianSlice<gimli::
         });
 
         if name.is_some() && offset.is_some() {
-            scope.variables.push(Variable { name: name.unwrap(), offset: offset.unwrap() });
+            scope.variables.insert(
+                String::from(name.unwrap()),
+                Variable { name: String::from(name.unwrap()), offset: offset.unwrap() }
+            );
         }
     });
 
@@ -140,13 +154,6 @@ fn get_types<'a>(dwarf: &'a gimli::Dwarf<gimli::EndianSlice<gimli::LittleEndian>
     });
 
     return types;
-}
-
-
-fn exec_prog(exec_path: &str) {
-    let child_pid = Command::new(exec_path).spawn().expect("failed to start program").id();
-    let c_child_pid: libc::pid_t = child_pid as libc::pid_t;
-    unsafe { setup(c_child_pid); }
 }
 
 
@@ -211,11 +218,38 @@ fn main() {
         ..Default::default()
     };
 
-    let global_scope = construct_global_scope(&dwarf);
+    let global_scope = construct_scope(&dwarf);
     let types = get_types(&dwarf);
 
     println!("done.");
-
     println!("executing program...");
-    exec_prog(&exec_path);
+
+    let child_pid = Command::new(exec_path).spawn().expect("failed to start program").id();
+    let c_child_pid: libc::pid_t = child_pid as libc::pid_t;
+    let c_scope = Box::new(global_scope);
+    let c_scope_ptr: &'static mut Scope = Box::leak(c_scope);
+    unsafe { setup(c_child_pid, exc_callback, &mut *c_scope_ptr); }
+}
+
+
+unsafe extern "C" fn exc_callback(scope: *mut Scope, rbp: libc::uintptr_t) {
+    print!("inspect var: "); std::io::stdout().flush().unwrap();
+    let mut varname: String = read!();
+    let variables = &(*scope).variables;
+    while variables.get(&varname).is_none() {
+        println!("{} unrecognized.", varname);
+        print!("inspect var: "); std::io::stdout().flush().unwrap();
+        varname = read!();
+    }
+
+    let offset = variables.get(&varname).unwrap().offset;
+    let addr = (rbp as i64) + offset;
+    let result: *mut f32 = libc::malloc(std::mem::size_of::<f32>()) as *mut f32;
+
+    read_addr(result as *mut libc::c_void, addr as libc::uintptr_t, 4);
+
+    println!("{}: {}", &varname, *result);
+
+    libc::free(result as *mut libc::c_void);
+    Box::from_raw(scope);
 }
