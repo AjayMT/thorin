@@ -113,7 +113,7 @@ void setup(pid_t child, exc_callback cb, void *scope)
 
   size_t req_size = sizeof(union __RequestUnion__mach_exc_subsystem);
   size_t rep_size = sizeof(union __ReplyUnion__mach_exc_subsystem);
-  mach_msg_server(
+  mach_msg_server_once(
     mach_exc_server,
     req_size > rep_size ? req_size : rep_size,
     task_exception_port,

@@ -233,23 +233,31 @@ fn main() {
 
 
 unsafe extern "C" fn exc_callback(scope: *mut Scope, rbp: libc::uintptr_t) {
-    print!("inspect var: "); std::io::stdout().flush().unwrap();
-    let mut varname: String = read!();
-    let variables = &(*scope).variables;
-    while variables.get(&varname).is_none() {
-        println!("{} unrecognized.", varname);
-        print!("inspect var: "); std::io::stdout().flush().unwrap();
-        varname = read!();
+    loop {
+        print!("thorin> "); std::io::stdout().flush().unwrap();
+        let command_s: String = read!("{}\n");
+        let command: Vec<_> = command_s.split_whitespace().collect();
+        let verb = command[0].to_string();
+
+        if verb == "exit" { break; }
+
+        let varname = command[1].to_string();
+        let variables = &(*scope).variables;
+        if variables.get(&varname).is_none() {
+            println!("{} unrecognized.", varname);
+            continue;
+        }
+
+        let offset = variables.get(&varname).unwrap().offset;
+        let addr = (rbp as i64) + offset;
+        let result: *mut f32 = libc::malloc(std::mem::size_of::<f32>()) as *mut f32;
+
+        read_addr(result as *mut libc::c_void, addr as libc::uintptr_t, 4);
+
+        println!("{}: {}", &varname, *result);
+
+        libc::free(result as *mut libc::c_void);
     }
 
-    let offset = variables.get(&varname).unwrap().offset;
-    let addr = (rbp as i64) + offset;
-    let result: *mut f32 = libc::malloc(std::mem::size_of::<f32>()) as *mut f32;
-
-    read_addr(result as *mut libc::c_void, addr as libc::uintptr_t, 4);
-
-    println!("{}: {}", &varname, *result);
-
-    libc::free(result as *mut libc::c_void);
     Box::from_raw(scope);
 }
