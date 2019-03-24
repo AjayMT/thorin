@@ -1,5 +1,6 @@
 
 #include <stdint.h>
+#include <stdlib.h>
 
 
 struct my_type {
@@ -22,8 +23,8 @@ int main(int argc, char *argv[])
   float pi = 3.14;
   func();
   struct my_type my_obj = { .val = 42, .baz = 'F' };
-
-  int *n = 0;
+  float *ppi = &pi;
+  int *n = NULL;
   *n = 12;
 
   return 0;

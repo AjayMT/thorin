@@ -25,7 +25,8 @@ extern {
 #[allow(unused)]
 struct Variable {
     name: String,
-    offset: i64
+    offset: i64,
+    type_name: String
 }
 
 
@@ -76,7 +77,9 @@ macro_rules! dwarf_find_attr {
 }
 
 
-fn construct_scope<'a>(dwarf: &'a gimli::Dwarf<gimli::EndianSlice<gimli::LittleEndian>>) -> Scope {
+fn construct_scope<'a>(
+    dwarf: &'a gimli::Dwarf<gimli::EndianSlice<gimli::LittleEndian>>
+) -> Scope {
     let mut scope: Scope = Scope {
         name: None,
         variables: HashMap::new(),
@@ -90,6 +93,7 @@ fn construct_scope<'a>(dwarf: &'a gimli::Dwarf<gimli::EndianSlice<gimli::LittleE
 
         let mut name: Option<&str> = None;
         let mut offset: Option<i64> = None;
+        let mut type_name: Option<&str> = None;
 
         dwarf_find_attr!(entry, attr_value, "DW_AT_name", {
             name = Some(dwarf.attr_string(&unit, attr_value).unwrap().to_string().unwrap());
@@ -98,7 +102,7 @@ fn construct_scope<'a>(dwarf: &'a gimli::Dwarf<gimli::EndianSlice<gimli::LittleE
         dwarf_find_attr!(entry, attr_value, "DW_AT_location", {
             let data = match attr_value {
                 gimli::AttributeValue::Exprloc(r) => r,
-                _ => { continue; }
+                _ => { break; }
             };
             let mut eval = data.evaluation(unit.encoding());
             let mut eval_state = eval.evaluate().unwrap();
@@ -116,10 +120,36 @@ fn construct_scope<'a>(dwarf: &'a gimli::Dwarf<gimli::EndianSlice<gimli::LittleE
             }
         });
 
+        dwarf_find_attr!(entry, attr_value, "DW_AT_type", {
+            let u_offset = match attr_value {
+                gimli::AttributeValue::UnitRef(r) => r,
+                _ => { break; }
+            };
+
+            let mut t_entries = unit.entries_at_offset(u_offset).unwrap();
+            let first_entry = match t_entries.next_dfs().unwrap() {
+                Some((_, r)) => r,
+                None => { break; }
+            };
+
+            if first_entry.tag() == gimli::DW_TAG_pointer_type {
+                type_name = Some("*");
+                break;
+            }
+
+            dwarf_find_attr!(first_entry, t_attr_value, "DW_AT_name", {
+                type_name = Some(dwarf.attr_string(&unit, t_attr_value).unwrap().to_string().unwrap());
+            });
+        });
+
         if name.is_some() && offset.is_some() {
             scope.variables.insert(
                 String::from(name.unwrap()),
-                Variable { name: String::from(name.unwrap()), offset: offset.unwrap() }
+                Variable {
+                    name: String::from(name.unwrap()),
+                    offset: offset.unwrap(),
+                    type_name: String::from(type_name.unwrap())
+                }
             );
         }
     });
@@ -244,19 +274,41 @@ unsafe extern "C" fn exc_callback(scope: *mut Scope, rbp: libc::uintptr_t) {
         let varname = command[1].to_string();
         let variables = &(*scope).variables;
         if variables.get(&varname).is_none() {
-            println!("{} unrecognized.", varname);
+            println!("unrecognized variable '{}'.", varname);
             continue;
         }
 
         let offset = variables.get(&varname).unwrap().offset;
+        let type_name = &variables.get(&varname).unwrap().type_name;
         let addr = (rbp as i64) + offset;
-        let result: *mut f32 = libc::malloc(std::mem::size_of::<f32>()) as *mut f32;
 
-        read_addr(result as *mut libc::c_void, addr as libc::uintptr_t, 4);
+        macro_rules! print_result_as {
+            ($t:ty, $tn:expr, $size:expr) => {
+                {
+                    let result: *mut $t = libc::malloc(std::mem::size_of::<$t>()) as *mut $t;
+                    read_addr(result as *mut libc::c_void, addr as libc::uintptr_t, $size);
+                    println!("{} {}: {}", $tn, &varname, *result);
+                    libc::free(result as *mut libc::c_void);
+                }
+            };
 
-        println!("{}: {}", &varname, *result);
+            ($t:ty, $tn:expr, $hex:expr, $size:expr) => {
+                {
+                    let result: *mut $t = libc::malloc(std::mem::size_of::<$t>()) as *mut $t;
+                    read_addr(result as *mut libc::c_void, addr as libc::uintptr_t, $size);
+                    println!("{} {}: {:#x}", $tn, &varname, *result);
+                    libc::free(result as *mut libc::c_void);
+                }
+            };
+        }
 
-        libc::free(result as *mut libc::c_void);
+        match type_name.as_ref() {
+            "int" => { print_result_as!(i32, &type_name, 4); },
+            "float" => { print_result_as!(f32, &type_name, 4); },
+            "double" => { print_result_as!(f64, &type_name, 8); }
+            "*" => { print_result_as!(u64, &type_name, true, 8); }
+            _ => { println!("unknown type"); continue; }
+        }
     }
 
     Box::from_raw(scope);
