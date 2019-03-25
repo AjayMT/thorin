@@ -283,19 +283,21 @@ unsafe extern "C" fn exc_callback(scope: *mut Scope, rbp: libc::uintptr_t) {
         let addr = (rbp as i64) + offset;
 
         macro_rules! print_result_as {
-            ($t:ty, $tn:expr, $size:expr) => {
+            ($t:ty, $tn:expr) => {
                 {
-                    let result: *mut $t = libc::malloc(std::mem::size_of::<$t>()) as *mut $t;
-                    read_addr(result as *mut libc::c_void, addr as libc::uintptr_t, $size);
+                    let size = std::mem::size_of::<$t>();
+                    let result: *mut $t = libc::malloc(size) as *mut $t;
+                    read_addr(result as *mut libc::c_void, addr as libc::uintptr_t, size);
                     println!("{} {}: {}", $tn, &varname, *result);
                     libc::free(result as *mut libc::c_void);
                 }
             };
 
-            ($t:ty, $tn:expr, $hex:expr, $size:expr) => {
+            ($t:ty, $tn:expr, $hex:expr) => {
                 {
-                    let result: *mut $t = libc::malloc(std::mem::size_of::<$t>()) as *mut $t;
-                    read_addr(result as *mut libc::c_void, addr as libc::uintptr_t, $size);
+                    let size = std::mem::size_of::<$t>();
+                    let result: *mut $t = libc::malloc(size) as *mut $t;
+                    read_addr(result as *mut libc::c_void, addr as libc::uintptr_t, size);
                     println!("{} {}: {:#x}", $tn, &varname, *result);
                     libc::free(result as *mut libc::c_void);
                 }
@@ -303,10 +305,10 @@ unsafe extern "C" fn exc_callback(scope: *mut Scope, rbp: libc::uintptr_t) {
         }
 
         match type_name.as_ref() {
-            "int" => { print_result_as!(i32, &type_name, 4); },
-            "float" => { print_result_as!(f32, &type_name, 4); },
-            "double" => { print_result_as!(f64, &type_name, 8); }
-            "*" => { print_result_as!(u64, &type_name, true, 8); }
+            "int" => { print_result_as!(i32, &type_name); },
+            "float" => { print_result_as!(f32, &type_name); },
+            "double" => { print_result_as!(f64, &type_name); }
+            "*" => { print_result_as!(u64, &type_name, true); }
             _ => { println!("unknown type"); continue; }
         }
     }
