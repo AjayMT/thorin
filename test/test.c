@@ -1,5 +1,6 @@
 
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 
 
@@ -16,6 +17,13 @@ void func()
     uintptr_t b = 2;
     ++b;
   }
+
+  uint64_t foo = 11;
+
+  if (foo) {
+    double pi = 22 / 7;
+    printf("z\n");
+  }
 }
 
 int main(int argc, char *argv[])
@@ -24,6 +32,9 @@ int main(int argc, char *argv[])
   func();
   struct my_type my_obj = { .val = 42, .baz = 'F' };
   float *ppi = &pi;
+
+  printf("hello\n");
+
   int *n = NULL;
   *n = 12;
 

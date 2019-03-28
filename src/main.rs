@@ -23,6 +23,7 @@ extern {
 
 
 #[allow(unused)]
+#[derive(Clone, Debug)]
 struct Variable {
     name: String,
     offset: i64,
@@ -31,6 +32,7 @@ struct Variable {
 
 
 #[allow(unused)]
+#[derive(Clone)]
 struct Scope {
     name: Option<String>,
     variables: HashMap<String, Variable>,
@@ -38,8 +40,15 @@ struct Scope {
 }
 
 
-macro_rules! dwarf_iter_entries {
-    ($dwarf:ident, $unit:ident, $d_depth:ident, $entry:ident, $body:block) => {
+#[allow(unused)]
+struct DerivedType {
+    name: String,
+    base_types: Vec<String>
+}
+
+
+macro_rules! dwarf_iter_units {
+    ($dwarf:ident, $unit:ident, $body:block) => {
         {
             let units: Vec<_> = $dwarf.units().collect().unwrap();
             for header in units {
@@ -51,10 +60,21 @@ macro_rules! dwarf_iter_entries {
                     }
                 };
 
-                let mut entries = $unit.entries();
-                while let Some(($d_depth, $entry)) = entries.next_dfs().unwrap()
-                    $body
+                $body
             }
+        }
+    };
+}
+
+
+macro_rules! dwarf_iter_entries {
+    ($dwarf:ident, $unit:ident, $d_depth:ident, $entry:ident, $body:block) => {
+        {
+            dwarf_iter_units!($dwarf, $unit, {
+                let mut entries = $unit.entries();
+                while let Some((mut $d_depth, $entry)) = entries.next_dfs().unwrap()
+                    $body
+            });
         }
     };
 }
@@ -77,109 +97,158 @@ macro_rules! dwarf_find_attr {
 }
 
 
-fn construct_scope<'a>(
-    dwarf: &'a gimli::Dwarf<gimli::EndianSlice<gimli::LittleEndian>>
-) -> Scope {
-    let mut scope: Scope = Scope {
+fn process_variable<'a, 'b>(
+    dwarf: &'a gimli::Dwarf<gimli::EndianSlice<'b, gimli::LittleEndian>>,
+    unit: &'a gimli::Unit<gimli::EndianSlice<'b, gimli::LittleEndian>>,
+    node: &'a gimli::EntriesTreeNode<gimli::EndianSlice<'b, gimli::LittleEndian>>
+) -> Option<Variable> {
+    let entry = node.entry();
+    if entry.tag() != gimli::DW_TAG_variable && entry.tag() != gimli::DW_TAG_formal_parameter {
+        return None;
+    }
+
+    let mut name: Option<&str> = None;
+    let mut offset: Option<i64> = None;
+    let mut type_name: Option<&str> = None;
+
+    dwarf_find_attr!(entry, attr_value, "DW_AT_name", {
+        name = Some(dwarf.attr_string(unit, attr_value).unwrap().to_string().unwrap());
+    });
+
+    dwarf_find_attr!(entry, attr_value, "DW_AT_location", {
+        let data = match attr_value {
+            gimli::AttributeValue::Exprloc(r) => r,
+            _ => { break; }
+        };
+        let mut eval = data.evaluation(unit.encoding());
+        let mut eval_state = eval.evaluate().unwrap();
+        while eval_state != gimli::EvaluationResult::Complete {
+            match eval_state {
+                gimli::EvaluationResult::RequiresFrameBase => {
+                    eval_state = eval.resume_with_frame_base(0).unwrap();
+                },
+                _ => unimplemented!()
+            }
+        }
+        let eval_result = eval.result();
+        if let gimli::Location::Address { address: addr } = eval_result[0].location {
+            offset = Some(addr as i64)
+        }
+    });
+
+    dwarf_find_attr!(entry, attr_value, "DW_AT_type", {
+        let u_offset = match attr_value {
+            gimli::AttributeValue::UnitRef(r) => r,
+            _ => { break; }
+        };
+
+        let mut t_entries = unit.entries_at_offset(u_offset).unwrap();
+        let first_entry = match t_entries.next_dfs().unwrap() {
+            Some((_, r)) => r,
+            None => { break; }
+        };
+
+        if first_entry.tag() == gimli::DW_TAG_pointer_type {
+            type_name = Some("*");
+            break;
+        }
+
+        dwarf_find_attr!(first_entry, t_attr_value, "DW_AT_name", {
+            type_name = Some(dwarf.attr_string(unit, t_attr_value).unwrap().to_string().unwrap());
+        });
+    });
+
+    if name.is_some() && offset.is_some() {
+        return Some(Variable {
+            name: String::from(name.unwrap()),
+            offset: offset.unwrap(),
+            type_name: String::from(match type_name { Some(t) => t, None => "" })
+        });
+    }
+
+    return None;
+}
+
+
+fn construct_scope<'a, 'b>(
+    dwarf: &'a gimli::Dwarf<gimli::EndianSlice<'b, gimli::LittleEndian>>,
+    unit: &'a gimli::Unit<gimli::EndianSlice<'b, gimli::LittleEndian>>,
+    node: gimli::EntriesTreeNode<gimli::EndianSlice<'b, gimli::LittleEndian>>
+) -> Option<Scope> {
+    let mut scope = Scope {
         name: None,
         variables: HashMap::new(),
         scopes: Vec::new()
     };
 
-    dwarf_iter_entries!(dwarf, unit, d_depth, entry, {
-        if entry.tag() != gimli::DW_TAG_variable && entry.tag() != gimli::DW_TAG_formal_parameter {
-            continue;
+    {
+        let entry = node.entry();
+        dwarf_find_attr!(entry, attr_value, "DW_AT_name", {
+            scope.name = Some(String::from(dwarf.attr_string(unit, attr_value).unwrap().to_string().unwrap()));
+        });
+    }
+
+    let mut children = node.children();
+    while let Some(child) = children.next().unwrap() {
+        let tag = child.entry().tag();
+        if tag == gimli::DW_TAG_variable || tag == gimli::DW_TAG_formal_parameter {
+            if let Some(var) = process_variable(dwarf, unit, &child) {
+                scope.variables.insert(var.name.clone(), var);
+            }
         }
 
-        let mut name: Option<&str> = None;
-        let mut offset: Option<i64> = None;
-        let mut type_name: Option<&str> = None;
-
-        dwarf_find_attr!(entry, attr_value, "DW_AT_name", {
-            name = Some(dwarf.attr_string(&unit, attr_value).unwrap().to_string().unwrap());
-        });
-
-        dwarf_find_attr!(entry, attr_value, "DW_AT_location", {
-            let data = match attr_value {
-                gimli::AttributeValue::Exprloc(r) => r,
-                _ => { break; }
-            };
-            let mut eval = data.evaluation(unit.encoding());
-            let mut eval_state = eval.evaluate().unwrap();
-            while eval_state != gimli::EvaluationResult::Complete {
-                match eval_state {
-                    gimli::EvaluationResult::RequiresFrameBase => {
-                        eval_state = eval.resume_with_frame_base(0).unwrap();
-                    },
-                    _ => unimplemented!()
-                }
+        if tag == gimli::DW_TAG_subprogram || tag == gimli::DW_TAG_lexical_block {
+            if let Some(s) = construct_scope(dwarf, unit, child) {
+                scope.scopes.push(s);
             }
-            let eval_result = eval.result();
-            if let gimli::Location::Address { address: addr } = eval_result[0].location {
-                offset = Some(addr as i64)
-            }
-        });
+        }
+    }
 
-        dwarf_find_attr!(entry, attr_value, "DW_AT_type", {
-            let u_offset = match attr_value {
-                gimli::AttributeValue::UnitRef(r) => r,
-                _ => { break; }
-            };
+    return Some(scope);
+}
 
-            let mut t_entries = unit.entries_at_offset(u_offset).unwrap();
-            let first_entry = match t_entries.next_dfs().unwrap() {
-                Some((_, r)) => r,
-                None => { break; }
-            };
+fn construct_global_scope<'a>(
+    dwarf: &'a gimli::Dwarf<gimli::EndianSlice<gimli::LittleEndian>>
+) -> Scope {
+    let mut global_scope = Scope {
+        name: None,
+        variables: HashMap::new(),
+        scopes: Vec::new()
+    };
 
-            if first_entry.tag() == gimli::DW_TAG_pointer_type {
-                type_name = Some("*");
-                break;
-            }
-
-            dwarf_find_attr!(first_entry, t_attr_value, "DW_AT_name", {
-                type_name = Some(dwarf.attr_string(&unit, t_attr_value).unwrap().to_string().unwrap());
-            });
-        });
-
-        if name.is_some() && offset.is_some() {
-            scope.variables.insert(
-                String::from(name.unwrap()),
-                Variable {
-                    name: String::from(name.unwrap()),
-                    offset: offset.unwrap(),
-                    type_name: String::from(type_name.unwrap())
-                }
-            );
+    dwarf_iter_units!(dwarf, unit, {
+        let mut tree = unit.entries_tree(None).unwrap();
+        let root = tree.root().unwrap();
+        if let Some(scope) = construct_scope(dwarf, &unit, root) {
+            global_scope.scopes.push(scope);
         }
     });
 
-    return scope;
+    return global_scope;
 }
 
 
-fn get_types<'a>(dwarf: &'a gimli::Dwarf<gimli::EndianSlice<gimli::LittleEndian>>) -> HashMap<&'a str, u64> {
-    let mut types: HashMap<&str, u64> = HashMap::new();
-    types.insert("*", 8);
+fn get_types<'a>(dwarf: &'a gimli::Dwarf<gimli::EndianSlice<gimli::LittleEndian>>) -> HashMap<String, DerivedType> {
+    let mut types: HashMap<String, DerivedType> = HashMap::new();
 
     dwarf_iter_entries!(dwarf, unit, d_depth, entry, {
-        if entry.tag() != gimli::DW_TAG_base_type { continue; }
+        if entry.tag() != gimli::DW_TAG_typedef
+            && entry.tag() != gimli::DW_TAG_structure_type {
+                continue;
+            }
 
         let mut name: Option<&str> = None;
-        let mut size: Option<u64> = None;
+        let mut base_types: Vec<String> = Vec::new();
 
         dwarf_find_attr!(entry, attr_value, "DW_AT_name", {
             name = Some(dwarf.attr_string(&unit, attr_value).unwrap().to_string().unwrap());
         });
 
-        dwarf_find_attr!(entry, attr_value, "DW_AT_byte_size", {
-            if let gimli::AttributeValue::Udata(r_size) = attr_value {
-                size = Some(r_size);
-            }
-        });
-
-        if name.is_some() && size.is_some() {
-            types.insert(name.unwrap(), size.unwrap());
+        if name.is_some() && base_types.len() > 0 {
+            types.insert(String::from(name.unwrap()), DerivedType {
+                name: String::from(name.unwrap()),
+                base_types: base_types
+            });
         }
     });
 
@@ -248,8 +317,10 @@ fn main() {
         ..Default::default()
     };
 
-    let global_scope = construct_scope(&dwarf);
+    let global_scope = construct_global_scope(&dwarf);
     let types = get_types(&dwarf);
+
+    print_scope("", &global_scope);
 
     println!("done.");
     println!("executing program...");
@@ -259,6 +330,18 @@ fn main() {
     let c_scope = Box::new(global_scope);
     let c_scope_ptr: &'static mut Scope = Box::leak(c_scope);
     unsafe { setup(c_child_pid, exc_callback, &mut *c_scope_ptr); }
+}
+
+
+fn print_scope(offset: &str, scope: &Scope) {
+    println!("{}scope name: {:?}", offset, scope.name);
+    println!("{}  variables: {:?}", offset, scope.variables);
+
+    let mut off = String::from(offset); off.push_str("  ");
+    for s in &scope.scopes {
+        println!("");
+        print_scope(&off, &s);
+    }
 }
 
 
@@ -305,10 +388,25 @@ unsafe extern "C" fn exc_callback(scope: *mut Scope, rbp: libc::uintptr_t) {
         }
 
         match type_name.as_ref() {
-            "int" => { print_result_as!(i32); },
+            "char" | "signed char" | "unsigned char" => { print_result_as!(char); },
+
+            "short" | "signed short" | "short int" | "signed short int" => { print_result_as!(i16); },
+            "unsigned short" | "unsigned short int" => { print_result_as!(u16); },
+
+            "int" | "signed int" | "signed" => { print_result_as!(i16); },
+            "unsigned int" | "unsigned" => { print_result_as!(u16) },
+
+            "long" | "signed long" | "long int" | "signed long int" => { print_result_as!(i32); },
+            "unsigned long" | "unsigned long int" => { print_result_as!(u32); },
+
+            "long long" | "signed long long" | "long long int" | "signed long long int" => { print_result_as!(i64); },
+            "unsigned long long" | "unsigned long long int" => { print_result_as!(u64); },
+
             "float" => { print_result_as!(f32); },
             "double" => { print_result_as!(f64); }
+
             "*" => { print_result_as!(u64, true); }
+
             _ => { println!("unknown type"); continue; }
         }
     }
