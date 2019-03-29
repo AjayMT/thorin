@@ -36,7 +36,9 @@ struct Variable {
 struct Scope {
     name: Option<String>,
     variables: HashMap<String, Variable>,
-    scopes: Vec<Scope>
+    scopes: Vec<Scope>,
+    low_pc: u64,
+    high_pc: u64
 }
 
 
@@ -178,13 +180,27 @@ fn construct_scope<'a, 'b>(
     let mut scope = Scope {
         name: None,
         variables: HashMap::new(),
-        scopes: Vec::new()
+        scopes: Vec::new(),
+        low_pc: 0,
+        high_pc: 0
     };
 
     {
         let entry = node.entry();
         dwarf_find_attr!(entry, attr_value, "DW_AT_name", {
             scope.name = Some(String::from(dwarf.attr_string(unit, attr_value).unwrap().to_string().unwrap()));
+        });
+
+        dwarf_find_attr!(entry, attr_value, "DW_AT_low_pc", {
+            if let gimli::AttributeValue::Addr(addr) = attr_value {
+                scope.low_pc = addr;
+            }
+        });
+
+        dwarf_find_attr!(entry, attr_value, "DW_AT_high_pc", {
+            if let gimli::AttributeValue::Udata(addr) = attr_value {
+                scope.high_pc = addr;
+            }
         });
     }
 
@@ -213,7 +229,9 @@ fn construct_global_scope<'a>(
     let mut global_scope = Scope {
         name: None,
         variables: HashMap::new(),
-        scopes: Vec::new()
+        scopes: Vec::new(),
+        low_pc: 0,
+        high_pc: 0
     };
 
     dwarf_iter_units!(dwarf, unit, {
@@ -233,7 +251,8 @@ fn get_types<'a>(dwarf: &'a gimli::Dwarf<gimli::EndianSlice<gimli::LittleEndian>
 
     dwarf_iter_entries!(dwarf, unit, d_depth, entry, {
         if entry.tag() != gimli::DW_TAG_typedef
-            && entry.tag() != gimli::DW_TAG_structure_type {
+            && entry.tag() != gimli::DW_TAG_structure_type
+            && entry.tag() != gimli::DW_TAG_pointer_type {
                 continue;
             }
 
@@ -336,6 +355,8 @@ fn main() {
 fn print_scope(offset: &str, scope: &Scope) {
     println!("{}scope name: {:?}", offset, scope.name);
     println!("{}  variables: {:?}", offset, scope.variables);
+    println!("{}  low_pc: {:?}", offset, scope.low_pc);
+    println!("{}  high_pc: {:?}", offset, scope.high_pc);
 
     let mut off = String::from(offset); off.push_str("  ");
     for s in &scope.scopes {
