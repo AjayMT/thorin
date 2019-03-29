@@ -9,7 +9,7 @@
 #include "mig/mach_exc.h"
 
 
-typedef void (*exc_callback)(void*, uintptr_t);
+typedef void (*exc_callback)(void*, uintptr_t, uintptr_t);
 static exc_callback global_cb;
 static mach_port_t global_task;
 static mach_port_t global_task_exc;
@@ -58,8 +58,9 @@ kern_return_t catch_mach_exception_raise_state_identity (
   mach_msg_type_number_t *new_stateCnt
   )
 {
-  uintptr_t rbp = ((x86_thread_state64_t *)old_state)->__rbp;
-  global_cb(global_scope, rbp);
+  x86_thread_state64_t state = *(x86_thread_state64_t *)old_state;
+
+  global_cb(global_scope, state.__rbp, state.__rip);
 
   return KERN_FAILURE;
 }
@@ -129,6 +130,7 @@ void read_addr(void *buffer, uintptr_t address, size_t size)
   kret = mach_vm_read_overwrite(global_task, address, (mach_vm_size_t)size, (mach_vm_address_t)buffer, &local_size);
   if (kret != KERN_SUCCESS) {
     printf("mach_vm_read failed: %s\n", mach_error_string(kret));
+    memset(buffer, 0, size);
     return;
   }
 }

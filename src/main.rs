@@ -17,7 +17,7 @@ use std::collections::HashMap;
 
 
 extern {
-    fn setup(child: libc::pid_t, callback: unsafe extern fn(*mut Scope, libc::uintptr_t), scope: *mut Scope);
+    fn setup(child: libc::pid_t, callback: unsafe extern fn(*mut Scope, libc::uintptr_t, libc::uintptr_t), scope: *mut Scope);
     fn read_addr(buffer: *mut libc::c_void, address: libc::uintptr_t, size: libc::size_t);
 }
 
@@ -182,7 +182,7 @@ fn construct_scope<'a, 'b>(
         variables: HashMap::new(),
         scopes: Vec::new(),
         low_pc: 0,
-        high_pc: 0
+        high_pc: std::u64::MAX
     };
 
     {
@@ -231,7 +231,7 @@ fn construct_global_scope<'a>(
         variables: HashMap::new(),
         scopes: Vec::new(),
         low_pc: 0,
-        high_pc: 0
+        high_pc: std::u64::MAX
     };
 
     dwarf_iter_units!(dwarf, unit, {
@@ -366,7 +366,27 @@ fn print_scope(offset: &str, scope: &Scope) {
 }
 
 
-unsafe extern "C" fn exc_callback(scope: *mut Scope, rbp: libc::uintptr_t) {
+fn construct_context(scope: &Scope, variables: &mut HashMap<String, Variable>, rip: u64) {
+    for (name, val) in &(scope.variables) {
+        variables.insert(name.clone(), val.clone());
+    }
+
+    for child in &(scope.scopes) {
+        println!("rip: {} low_pc: {} high_pc: {}", rip, child.low_pc, child.high_pc);
+        if rip >= child.low_pc && rip - child.low_pc <= child.high_pc {
+            construct_context(child, variables, rip);
+        }
+    }
+}
+
+
+unsafe extern "C" fn exc_callback(scope_p: *mut Scope, rbp: libc::uintptr_t, rip: libc::uintptr_t) {
+    let mut variables: HashMap<String, Variable> = HashMap::new();
+    let scope = &(*scope_p);
+    construct_context(scope, &mut variables, rip as u64);
+
+    println!("{:?}", variables);
+
     loop {
         print!("thorin> "); std::io::stdout().flush().unwrap();
         let command_s: String = read!("{}\n");
@@ -376,7 +396,6 @@ unsafe extern "C" fn exc_callback(scope: *mut Scope, rbp: libc::uintptr_t) {
         if verb == "exit" { break; }
 
         let varname = command[1].to_string();
-        let variables = &(*scope).variables;
         if variables.get(&varname).is_none() {
             println!("unrecognized variable '{}'.", varname);
             continue;
@@ -432,5 +451,5 @@ unsafe extern "C" fn exc_callback(scope: *mut Scope, rbp: libc::uintptr_t) {
         }
     }
 
-    Box::from_raw(scope);
+    Box::from_raw(scope_p);
 }

@@ -12,6 +12,8 @@ struct my_type {
 
 void func()
 {
+  *((int *) NULL) = 12;
+
   int64_t var = 12;
   if (var) {
     uintptr_t b = 2;
@@ -21,8 +23,8 @@ void func()
   uint64_t foo = 11;
 
   if (foo) {
-    double pi = 22 / 7;
-    printf("z\n");
+    double pi = 22.0 / 7.0;
+    printf("double pi = %f\n", pi);
   }
 }
 
@@ -34,9 +36,6 @@ int main(int argc, char *argv[])
   float *ppi = &pi;
 
   printf("hello\n");
-
-  int *n = NULL;
-  *n = 12;
 
   return 0;
 }
