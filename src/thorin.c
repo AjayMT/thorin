@@ -10,11 +10,12 @@
 #include "mig/mach_exc.h"
 
 
-typedef void (*exc_callback)(void*, uintptr_t, uintptr_t);
+typedef void (*exc_callback)(void*, void*, uintptr_t, uintptr_t);
 static exc_callback global_cb;
 static mach_port_t global_task;
 static mach_port_t global_task_exc;
 static void *global_scope;
+static void *global_types;
 
 
 extern boolean_t mach_exc_server (mach_msg_header_t *msg, mach_msg_header_t *reply);
@@ -61,13 +62,13 @@ kern_return_t catch_mach_exception_raise_state_identity (
 {
   x86_thread_state64_t state = *(x86_thread_state64_t *)old_state;
 
-  global_cb(global_scope, state.__rbp, state.__rip);
+  global_cb(global_scope, global_types, state.__rbp, state.__rip);
 
   return KERN_FAILURE;
 }
 
 
-void setup(const char *target, exc_callback cb, void *scope)
+void setup(const char *target, exc_callback cb, void *scope, void *types)
 {
   pid_t child = 0;
   posix_spawnattr_t attr;
@@ -118,6 +119,7 @@ void setup(const char *target, exc_callback cb, void *scope)
   global_task_exc = task_exception_port;
   global_cb = cb;
   global_scope = scope;
+  global_types = types;
 
   size_t req_size = sizeof(union __RequestUnion__mach_exc_subsystem);
   size_t rep_size = sizeof(union __ReplyUnion__mach_exc_subsystem);

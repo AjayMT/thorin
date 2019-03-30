@@ -16,7 +16,12 @@ use std::collections::HashMap;
 
 
 extern {
-    fn setup(child: *const std::os::raw::c_char, callback: unsafe extern fn(*mut Scope, libc::uintptr_t, libc::uintptr_t), scope: *mut Scope);
+    fn setup(
+        child: *const std::os::raw::c_char,
+        callback: unsafe extern fn(*mut Scope, *mut HashMap<String, DerivedType>, libc::uintptr_t, libc::uintptr_t),
+        scope: *mut Scope,
+        types: *mut HashMap<String, DerivedType>
+    );
     fn read_addr(buffer: *mut libc::c_void, address: libc::uintptr_t, size: libc::size_t);
 }
 
@@ -262,6 +267,28 @@ fn get_types<'a>(dwarf: &'a gimli::Dwarf<gimli::EndianSlice<gimli::LittleEndian>
             name = Some(dwarf.attr_string(&unit, attr_value).unwrap().to_string().unwrap());
         });
 
+        dwarf_find_attr!(entry, attr_value, "DW_AT_type", {
+            let u_offset = match attr_value {
+                gimli::AttributeValue::UnitRef(r) => r,
+                _ => { break; }
+            };
+
+            let mut t_entries = unit.entries_at_offset(u_offset).unwrap();
+            let first_entry = match t_entries.next_dfs().unwrap() {
+                Some((_, r)) => r,
+                None => { break; }
+            };
+
+            if first_entry.tag() == gimli::DW_TAG_pointer_type {
+                base_types.push(String::from("*"));
+                break;
+            }
+
+            dwarf_find_attr!(first_entry, t_attr_value, "DW_AT_name", {
+                base_types.push(String::from(dwarf.attr_string(&unit, t_attr_value).unwrap().to_string().unwrap()));
+            });
+        });
+
         if name.is_some() && base_types.len() > 0 {
             types.insert(String::from(name.unwrap()), DerivedType {
                 name: String::from(name.unwrap()),
@@ -338,62 +365,93 @@ fn main() {
     let global_scope = construct_global_scope(&dwarf);
     let types = get_types(&dwarf);
 
-    print_scope("", &global_scope);
-
     println!("done.");
-    println!("executing program...");
+    println!("executing {}...\n", exec_path);
 
     let exec_path_c = std::ffi::CString::new(String::from(exec_path)).unwrap();
     let c_scope = Box::new(global_scope);
     let c_scope_ptr: &'static mut Scope = Box::leak(c_scope);
-    unsafe { setup(exec_path_c.as_ptr(), exc_callback, &mut *c_scope_ptr); }
+    let c_types = Box::new(types);
+    let c_types_ptr: &'static mut HashMap<String, DerivedType> = Box::leak(c_types);
+    unsafe { setup(exec_path_c.as_ptr(), exc_callback, &mut *c_scope_ptr, &mut *c_types_ptr); }
 }
 
 
-fn print_scope(offset: &str, scope: &Scope) {
-    println!("{}scope name: {:?}", offset, scope.name);
-    println!("{}  variables: {:?}", offset, scope.variables);
-    println!("{}  low_pc: {:?}", offset, scope.low_pc);
-    println!("{}  high_pc: {:?}", offset, scope.high_pc);
-
-    let mut off = String::from(offset); off.push_str("  ");
-    for s in &scope.scopes {
-        println!("");
-        print_scope(&off, &s);
+fn construct_context(
+    scope: &Scope,
+    variables: &mut HashMap<String, Variable>,
+    scopes: &mut Vec<String>,
+    rip: u64
+) {
+    if let Some(ref name) = scope.name {
+        scopes.push(name.clone());
+    } else {
+        scopes.push(String::from("unnamed scope"));
     }
-}
 
-
-fn construct_context(scope: &Scope, variables: &mut HashMap<String, Variable>, rip: u64) {
     for (name, val) in &(scope.variables) {
         variables.insert(name.clone(), val.clone());
     }
 
     for child in &(scope.scopes) {
         if rip >= child.low_pc && rip - child.low_pc <= child.high_pc {
-            construct_context(child, variables, rip);
+            construct_context(child, variables, scopes, rip);
         }
     }
 }
 
 
-unsafe extern "C" fn exc_callback(scope_p: *mut Scope, rbp: libc::uintptr_t, rip: libc::uintptr_t) {
-    let mut variables: HashMap<String, Variable> = HashMap::new();
-    let scope = &(*scope_p);
-    construct_context(scope, &mut variables, rip as u64);
+fn resolve_type<'a>(type_name: &'a String, types: &'a HashMap<String, DerivedType>) -> &'a String {
+    if let Some(ref d_type) = types.get(type_name) {
+        return &d_type.base_types[0];
+    }
 
-    println!("Variables defined in this scope:");
+    return type_name;
+}
+
+
+unsafe extern "C" fn exc_callback(
+    scope_p: *mut Scope,
+    types_p: *mut HashMap<String, DerivedType>,
+    rbp: libc::uintptr_t,
+    rip: libc::uintptr_t
+) {
+    let mut variables: HashMap<String, Variable> = HashMap::new();
+    let mut scopes: Vec<String> = Vec::new();
+    let scope = &(*scope_p);
+    construct_context(scope, &mut variables, &mut scopes, rip as u64);
+
+    let types = &(*types_p);
+
+    println!("Scope tree:");
+    let mut scope_print_offset = String::from("");
+    for scope_name in scopes {
+        println!("{}-> {}", scope_print_offset, scope_name);
+        scope_print_offset.push_str("  ");
+    }
+
+    println!("\nVariables defined in this scope:");
     for (key, value) in &variables {
         println!("  {}: {}", key, value.type_name);
     }
 
+    println!("");
     loop {
         print!("thorin> "); std::io::stdout().flush().unwrap();
         let command_s: String = read!("{}\n");
         let command: Vec<_> = command_s.split_whitespace().collect();
         let verb = command[0].to_string();
 
-        if verb == "exit" { break; }
+        match verb.as_ref() {
+            "exit" | "quit" => { break; },
+            "print" | "show" | "get" => {
+                if command.len() < 2 {
+                    println!("command '{}' expects at least one argument", verb);
+                    continue;
+                }
+            },
+            other => { println!("unknown command '{}'", other); continue; }
+        }
 
         let varname = command[1].to_string();
         if variables.get(&varname).is_none() {
@@ -427,20 +485,22 @@ unsafe extern "C" fn exc_callback(scope_p: *mut Scope, rbp: libc::uintptr_t, rip
             };
         }
 
-        match type_name.as_ref() {
+        let type_name_r = resolve_type(type_name, &types);
+        println!("type {} resolved to type {}", type_name, type_name_r);
+        match type_name_r.as_ref() {
             "char" | "signed char" | "unsigned char" => { print_result_as!(char); },
 
-            "short" | "signed short" | "short int" | "signed short int" => { print_result_as!(i16); },
-            "unsigned short" | "unsigned short int" => { print_result_as!(u16); },
+            "short" | "signed short" | "short int" | "signed short int" | "short signed" | "short signed int" => { print_result_as!(i16); },
+            "unsigned short" | "unsigned short int" | "short unsigned" | "short unsigned int" => { print_result_as!(u16); },
 
             "int" | "signed int" | "signed" => { print_result_as!(i16); },
             "unsigned int" | "unsigned" => { print_result_as!(u16) },
 
-            "long" | "signed long" | "long int" | "signed long int" => { print_result_as!(i32); },
-            "unsigned long" | "unsigned long int" => { print_result_as!(u32); },
+            "long" | "signed long" | "long int" | "signed long int" | "long signed" | "long signed int" => { print_result_as!(i32); },
+            "unsigned long" | "unsigned long int" | "long unsigned" | "long unsigned int" => { print_result_as!(u32); },
 
-            "long long" | "signed long long" | "long long int" | "signed long long int" => { print_result_as!(i64); },
-            "unsigned long long" | "unsigned long long int" => { print_result_as!(u64); },
+            "long long" | "signed long long" | "long long int" | "signed long long int" | "long long signed" | "long long signed int" => { print_result_as!(i64); },
+            "unsigned long long" | "unsigned long long int" | "long long unsigned" | "long long unsigned int" => { print_result_as!(u64); },
 
             "float" => { print_result_as!(f32); },
             "double" => { print_result_as!(f64); }
@@ -452,4 +512,5 @@ unsafe extern "C" fn exc_callback(scope_p: *mut Scope, rbp: libc::uintptr_t, rip
     }
 
     Box::from_raw(scope_p);
+    Box::from_raw(types_p);
 }

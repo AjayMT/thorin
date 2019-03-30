@@ -22,7 +22,7 @@ void func()
 
   if (foo) {
     double pi = 22.0 / 7.0;
-    printf("double pi = %f\n", pi);
+    double *ptr = &pi;
     __builtin_trap();
   }
 }
