@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <spawn.h>
 #include <mach/mach.h>
 #include <mach/mach_vm.h>
 #include <mach/thread_state.h>
@@ -66,8 +67,14 @@ kern_return_t catch_mach_exception_raise_state_identity (
 }
 
 
-void setup(pid_t child, exc_callback cb, void *scope)
+void setup(const char *target, exc_callback cb, void *scope)
 {
+  pid_t child = 0;
+  posix_spawnattr_t attr;
+  posix_spawnattr_init(&attr);
+  posix_spawnattr_setflags(&attr, 0x100);
+  posix_spawnp(&child, target, NULL, &attr, NULL, NULL);
+
   mach_port_t task;
   mach_port_t task_exception_port;
   kern_return_t kret;

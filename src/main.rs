@@ -12,12 +12,11 @@ use fallible_iterator::FallibleIterator;
 use std::io::Read;
 use std::io::Write;
 use std::path::Path;
-use std::process::Command;
 use std::collections::HashMap;
 
 
 extern {
-    fn setup(child: libc::pid_t, callback: unsafe extern fn(*mut Scope, libc::uintptr_t, libc::uintptr_t), scope: *mut Scope);
+    fn setup(child: *const std::os::raw::c_char, callback: unsafe extern fn(*mut Scope, libc::uintptr_t, libc::uintptr_t), scope: *mut Scope);
     fn read_addr(buffer: *mut libc::c_void, address: libc::uintptr_t, size: libc::size_t);
 }
 
@@ -344,11 +343,10 @@ fn main() {
     println!("done.");
     println!("executing program...");
 
-    let child_pid = Command::new(exec_path).spawn().expect("failed to start program").id();
-    let c_child_pid: libc::pid_t = child_pid as libc::pid_t;
+    let exec_path_c = std::ffi::CString::new(String::from(exec_path)).unwrap();
     let c_scope = Box::new(global_scope);
     let c_scope_ptr: &'static mut Scope = Box::leak(c_scope);
-    unsafe { setup(c_child_pid, exc_callback, &mut *c_scope_ptr); }
+    unsafe { setup(exec_path_c.as_ptr(), exc_callback, &mut *c_scope_ptr); }
 }
 
 
@@ -372,7 +370,6 @@ fn construct_context(scope: &Scope, variables: &mut HashMap<String, Variable>, r
     }
 
     for child in &(scope.scopes) {
-        println!("rip: {} low_pc: {} high_pc: {}", rip, child.low_pc, child.high_pc);
         if rip >= child.low_pc && rip - child.low_pc <= child.high_pc {
             construct_context(child, variables, rip);
         }
@@ -385,7 +382,10 @@ unsafe extern "C" fn exc_callback(scope_p: *mut Scope, rbp: libc::uintptr_t, rip
     let scope = &(*scope_p);
     construct_context(scope, &mut variables, rip as u64);
 
-    println!("{:?}", variables);
+    println!("Variables defined in this scope:");
+    for (key, value) in &variables {
+        println!("  {}: {}", key, value.type_name);
+    }
 
     loop {
         print!("thorin> "); std::io::stdout().flush().unwrap();
