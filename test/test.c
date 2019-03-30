@@ -12,8 +12,6 @@ struct my_type {
 
 void func()
 {
-  *((int *) NULL) = 12;
-
   int64_t var = 12;
   if (var) {
     uintptr_t b = 2;
@@ -25,6 +23,7 @@ void func()
   if (foo) {
     double pi = 22.0 / 7.0;
     printf("double pi = %f\n", pi);
+    __builtin_trap();
   }
 }
 
