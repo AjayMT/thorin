@@ -3,23 +3,33 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <spawn.h>
+
+#ifdef __APPLE__
+
 #include <mach/mach.h>
 #include <mach/mach_vm.h>
 #include <mach/thread_state.h>
-
 #include "mig/mach_exc.h"
 
+#elif __linux__
+
+#include <sys/types.h>
+#include <sys/ptrace.h>
+
+#endif
 
 typedef void (*exc_callback)(void*, void*, uintptr_t, uintptr_t);
 static exc_callback global_cb;
-static mach_port_t global_task;
-static mach_port_t global_task_exc;
 static void *global_scope;
 static void *global_types;
 
 
-extern boolean_t mach_exc_server (mach_msg_header_t *msg, mach_msg_header_t *reply);
+#ifdef __APPLE__
 
+static mach_port_t global_task;
+static mach_port_t global_task_exc;
+
+extern boolean_t mach_exc_server (mach_msg_header_t *msg, mach_msg_header_t *reply);
 
 kern_return_t catch_mach_exception_raise_state (
   mach_port_t exception_port,
@@ -34,7 +44,6 @@ kern_return_t catch_mach_exception_raise_state (
   )
 { return KERN_FAILURE; }
 
-
 kern_return_t catch_mach_exception_raise (
   mach_port_t exception_port,
   mach_port_t thread,
@@ -44,7 +53,6 @@ kern_return_t catch_mach_exception_raise (
   mach_msg_type_number_t codeCnt
   )
 { return KERN_FAILURE; }
-
 
 kern_return_t catch_mach_exception_raise_state_identity (
   mach_port_t exception_port,
@@ -67,14 +75,19 @@ kern_return_t catch_mach_exception_raise_state_identity (
   return KERN_FAILURE;
 }
 
+#elif __linux__
+// TODO
+#endif
 
 void setup(const char *target, exc_callback cb, void *scope, void *types)
 {
   pid_t child = 0;
   posix_spawnattr_t attr;
   posix_spawnattr_init(&attr);
-  posix_spawnattr_setflags(&attr, 0x100);
+  posix_spawnattr_setflags(&attr, 0x100); // disable ASLR on MacOS
   posix_spawnp(&child, target, NULL, &attr, NULL, NULL);
+
+#ifdef __APPLE__
 
   mach_port_t task;
   mach_port_t task_exception_port;
@@ -117,10 +130,16 @@ void setup(const char *target, exc_callback cb, void *scope, void *types)
 
   global_task = task;
   global_task_exc = task_exception_port;
+
+#elif __linux__
+  // TODO
+#endif
+
   global_cb = cb;
   global_scope = scope;
   global_types = types;
 
+#ifdef __APPLE__
   size_t req_size = sizeof(union __RequestUnion__mach_exc_subsystem);
   size_t rep_size = sizeof(union __ReplyUnion__mach_exc_subsystem);
   mach_msg_server_once(
@@ -129,11 +148,15 @@ void setup(const char *target, exc_callback cb, void *scope, void *types)
     task_exception_port,
     0
     );
+#elif __linux__
+  // TODO
+#endif
 }
 
 
 void read_addr(void *buffer, uintptr_t address, size_t size)
 {
+#ifdef __APPLE__
   kern_return_t kret;
   mach_vm_size_t local_size = size;
   kret = mach_vm_read_overwrite(global_task, address, (mach_vm_size_t)size, (mach_vm_address_t)buffer, &local_size);
@@ -142,4 +165,7 @@ void read_addr(void *buffer, uintptr_t address, size_t size)
     memset(buffer, 0, size);
     return;
   }
+#elif __linux__
+  // TODO
+#endif
 }
