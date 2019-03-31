@@ -49,7 +49,8 @@ struct Scope {
 #[allow(unused)]
 struct DerivedType {
     name: String,
-    base_types: Vec<String>
+    base_type: String,
+    members: Vec<Variable>
 }
 
 
@@ -78,7 +79,7 @@ macro_rules! dwarf_iter_entries {
         {
             dwarf_iter_units!($dwarf, $unit, {
                 let mut entries = $unit.entries();
-                while let Some((mut $d_depth, $entry)) = entries.next_dfs().unwrap()
+                while let Some(($d_depth, $entry)) = entries.next_dfs().unwrap()
                     $body
             });
         }
@@ -109,9 +110,11 @@ fn process_variable<'a, 'b>(
     node: &'a gimli::EntriesTreeNode<gimli::EndianSlice<'b, gimli::LittleEndian>>
 ) -> Option<Variable> {
     let entry = node.entry();
-    if entry.tag() != gimli::DW_TAG_variable && entry.tag() != gimli::DW_TAG_formal_parameter {
-        return None;
-    }
+    if entry.tag() != gimli::DW_TAG_variable
+        && entry.tag() != gimli::DW_TAG_formal_parameter
+        && entry.tag() != gimli::DW_TAG_member {
+            return None;
+        }
 
     let mut name: Option<&str> = None;
     let mut offset: Option<i64> = None;
@@ -121,26 +124,34 @@ fn process_variable<'a, 'b>(
         name = Some(dwarf.attr_string(unit, attr_value).unwrap().to_string().unwrap());
     });
 
-    dwarf_find_attr!(entry, attr_value, "DW_AT_location", {
-        let data = match attr_value {
-            gimli::AttributeValue::Exprloc(r) => r,
-            _ => { break; }
-        };
-        let mut eval = data.evaluation(unit.encoding());
-        let mut eval_state = eval.evaluate().unwrap();
-        while eval_state != gimli::EvaluationResult::Complete {
-            match eval_state {
-                gimli::EvaluationResult::RequiresFrameBase => {
-                    eval_state = eval.resume_with_frame_base(0).unwrap();
-                },
-                _ => unimplemented!()
+    if entry.tag() == gimli::DW_TAG_member {
+        dwarf_find_attr!(entry, attr_value, "DW_AT_data_member_location", {
+            if let gimli::AttributeValue::Udata(addr) = attr_value {
+                offset = Some(addr as i64);
             }
-        }
-        let eval_result = eval.result();
-        if let gimli::Location::Address { address: addr } = eval_result[0].location {
-            offset = Some(addr as i64)
-        }
-    });
+        });
+    } else {
+        dwarf_find_attr!(entry, attr_value, "DW_AT_location", {
+            let data = match attr_value {
+                gimli::AttributeValue::Exprloc(r) => r,
+                _ => { break; }
+            };
+            let mut eval = data.evaluation(unit.encoding());
+            let mut eval_state = eval.evaluate().unwrap();
+            while eval_state != gimli::EvaluationResult::Complete {
+                match eval_state {
+                    gimli::EvaluationResult::RequiresFrameBase => {
+                        eval_state = eval.resume_with_frame_base(0).unwrap();
+                    },
+                    _ => unimplemented!()
+                }
+            }
+            let eval_result = eval.result();
+            if let gimli::Location::Address { address: addr } = eval_result[0].location {
+                offset = Some(addr as i64)
+            }
+        });
+    }
 
     dwarf_find_attr!(entry, attr_value, "DW_AT_type", {
         let u_offset = match attr_value {
@@ -227,11 +238,12 @@ fn construct_scope<'a, 'b>(
     return Some(scope);
 }
 
+
 fn construct_global_scope<'a>(
     dwarf: &'a gimli::Dwarf<gimli::EndianSlice<gimli::LittleEndian>>
 ) -> Scope {
     let mut global_scope = Scope {
-        name: None,
+        name: Some(String::from("root")),
         variables: HashMap::new(),
         scopes: Vec::new(),
         low_pc: 0,
@@ -253,7 +265,7 @@ fn construct_global_scope<'a>(
 fn get_types<'a>(dwarf: &'a gimli::Dwarf<gimli::EndianSlice<gimli::LittleEndian>>) -> HashMap<String, DerivedType> {
     let mut types: HashMap<String, DerivedType> = HashMap::new();
 
-    dwarf_iter_entries!(dwarf, unit, d_depth, entry, {
+    dwarf_iter_entries!(dwarf, unit, _d_depth, entry, {
         if entry.tag() != gimli::DW_TAG_typedef
             && entry.tag() != gimli::DW_TAG_structure_type
             && entry.tag() != gimli::DW_TAG_pointer_type {
@@ -261,7 +273,8 @@ fn get_types<'a>(dwarf: &'a gimli::Dwarf<gimli::EndianSlice<gimli::LittleEndian>
             }
 
         let mut name: Option<&str> = None;
-        let mut base_types: Vec<String> = Vec::new();
+        let mut base_type: Option<&str> = None;
+        let mut members: Vec<Variable> = Vec::new();
 
         dwarf_find_attr!(entry, attr_value, "DW_AT_name", {
             name = Some(dwarf.attr_string(&unit, attr_value).unwrap().to_string().unwrap());
@@ -280,19 +293,33 @@ fn get_types<'a>(dwarf: &'a gimli::Dwarf<gimli::EndianSlice<gimli::LittleEndian>
             };
 
             if first_entry.tag() == gimli::DW_TAG_pointer_type {
-                base_types.push(String::from("*"));
+                base_type = Some("*");
                 break;
             }
 
             dwarf_find_attr!(first_entry, t_attr_value, "DW_AT_name", {
-                base_types.push(String::from(dwarf.attr_string(&unit, t_attr_value).unwrap().to_string().unwrap()));
+                base_type = Some(dwarf.attr_string(&unit, t_attr_value).unwrap().to_string().unwrap());
             });
         });
 
-        if name.is_some() && base_types.len() > 0 {
+        if entry.tag() == gimli::DW_TAG_structure_type {
+            let mut tree = unit.entries_tree(Some(entry.offset())).unwrap();
+            let root = tree.root().unwrap();
+            let mut children = root.children();
+            while let Some(child) = children.next().unwrap() {
+                let tag = child.entry().tag();
+                if tag != gimli::DW_TAG_member { continue };
+
+                let member = process_variable(dwarf, &unit, &child);
+                if let Some(r) = member { members.push(r); }
+            }
+        }
+
+        if name.is_some() && (base_type.is_some() || members.len() > 0) {
             types.insert(String::from(name.unwrap()), DerivedType {
                 name: String::from(name.unwrap()),
-                base_types: base_types
+                base_type: String::from(if let Some(s) = base_type { s } else { "" }),
+                members: members
             });
         }
     });
@@ -401,12 +428,71 @@ fn construct_context(
 }
 
 
-fn resolve_type<'a>(type_name: &'a String, types: &'a HashMap<String, DerivedType>) -> &'a String {
-    if let Some(ref d_type) = types.get(type_name) {
-        return &d_type.base_types[0];
+unsafe fn print_variable(type_name: &str, addr: i64) {
+    macro_rules! print_result_as {
+        ($t:ty) => {
+            {
+                let size = std::mem::size_of::<$t>();
+                let result: *mut $t = libc::malloc(size) as *mut $t;
+                read_addr(result as *mut libc::c_void, addr as libc::uintptr_t, size);
+                println!("{}", *result);
+                libc::free(result as *mut libc::c_void);
+            }
+        };
+
+        ($t:ty, $hex:expr) => {
+            {
+                let size = std::mem::size_of::<$t>();
+                let result: *mut $t = libc::malloc(size) as *mut $t;
+                read_addr(result as *mut libc::c_void, addr as libc::uintptr_t, size);
+                println!("{:#x}", *result);
+                libc::free(result as *mut libc::c_void);
+            }
+        };
     }
 
-    return type_name;
+    match type_name {
+        "char" | "signed char" | "unsigned char" => { print_result_as!(char); },
+
+        "short" | "signed short" | "short int" | "signed short int" | "short signed" | "short signed int" => { print_result_as!(i16); },
+        "unsigned short" | "unsigned short int" | "short unsigned" | "short unsigned int" => { print_result_as!(u16); },
+
+        "int" | "signed int" | "signed" => { print_result_as!(i16); },
+        "unsigned int" | "unsigned" => { print_result_as!(u16); },
+
+        "long" | "signed long" | "long int" | "signed long int" | "long signed" | "long signed int" => { print_result_as!(i32); },
+        "unsigned long" | "unsigned long int" | "long unsigned" | "long unsigned int" => { print_result_as!(u32); },
+
+        "long long" | "signed long long" | "long long int" | "signed long long int" | "long long signed" | "long long signed int" => { print_result_as!(i64); },
+        "unsigned long long" | "unsigned long long int" | "long long unsigned" | "long long unsigned int" => { print_result_as!(u64); },
+
+        "float" => { print_result_as!(f32); },
+        "double" => { print_result_as!(f64); }
+
+        "*" => { print_result_as!(u64, true); }
+
+        _ => { println!("unknown type"); }
+    }
+}
+
+
+fn print_struct(offset: &str, varname: &str, type_name: &str, addr: i64, types: &HashMap<String, DerivedType>) {
+    print!("{}{} {}: ", offset, type_name, varname);
+    let d_type = types.get(type_name);
+    if let Some(ref dt) = d_type {
+        println!("");
+        let new_offset = format!("  {}", offset);
+        if dt.members.len() > 0 {
+            for member in &dt.members {
+                let new_addr = addr + member.offset;
+                print_struct(&new_offset, &member.name, &member.type_name, new_addr, types);
+            }
+        } else {
+            print_struct(&new_offset, varname, &dt.base_type, addr, types);
+        }
+    } else {
+        unsafe { print_variable(type_name, addr); }
+    }
 }
 
 
@@ -463,52 +549,7 @@ unsafe extern "C" fn exc_callback(
         let type_name = &variables.get(&varname).unwrap().type_name;
         let addr = (rbp as i64) + offset;
 
-        macro_rules! print_result_as {
-            ($t:ty) => {
-                {
-                    let size = std::mem::size_of::<$t>();
-                    let result: *mut $t = libc::malloc(size) as *mut $t;
-                    read_addr(result as *mut libc::c_void, addr as libc::uintptr_t, size);
-                    println!("{} {}: {}", &type_name, &varname, *result);
-                    libc::free(result as *mut libc::c_void);
-                }
-            };
-
-            ($t:ty, $hex:expr) => {
-                {
-                    let size = std::mem::size_of::<$t>();
-                    let result: *mut $t = libc::malloc(size) as *mut $t;
-                    read_addr(result as *mut libc::c_void, addr as libc::uintptr_t, size);
-                    println!("{} {}: {:#x}", &type_name, &varname, *result);
-                    libc::free(result as *mut libc::c_void);
-                }
-            };
-        }
-
-        let type_name_r = resolve_type(type_name, &types);
-        println!("type {} resolved to type {}", type_name, type_name_r);
-        match type_name_r.as_ref() {
-            "char" | "signed char" | "unsigned char" => { print_result_as!(char); },
-
-            "short" | "signed short" | "short int" | "signed short int" | "short signed" | "short signed int" => { print_result_as!(i16); },
-            "unsigned short" | "unsigned short int" | "short unsigned" | "short unsigned int" => { print_result_as!(u16); },
-
-            "int" | "signed int" | "signed" => { print_result_as!(i16); },
-            "unsigned int" | "unsigned" => { print_result_as!(u16) },
-
-            "long" | "signed long" | "long int" | "signed long int" | "long signed" | "long signed int" => { print_result_as!(i32); },
-            "unsigned long" | "unsigned long int" | "long unsigned" | "long unsigned int" => { print_result_as!(u32); },
-
-            "long long" | "signed long long" | "long long int" | "signed long long int" | "long long signed" | "long long signed int" => { print_result_as!(i64); },
-            "unsigned long long" | "unsigned long long int" | "long long unsigned" | "long long unsigned int" => { print_result_as!(u64); },
-
-            "float" => { print_result_as!(f32); },
-            "double" => { print_result_as!(f64); }
-
-            "*" => { print_result_as!(u64, true); }
-
-            _ => { println!("unknown type"); continue; }
-        }
+        print_struct("", &varname, &type_name, addr, &types);
     }
 
     Box::from_raw(scope_p);
