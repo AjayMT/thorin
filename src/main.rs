@@ -429,51 +429,102 @@ fn construct_context(
 }
 
 
-unsafe fn print_variable(type_name: &str, addr: i64) {
-    macro_rules! print_result_as {
-        ($t:ty) => {
+macro_rules! print_result_as {
+    ($t:ty, $addr:ident) => {
+        {
+            let size = std::mem::size_of::<$t>();
+            let result: *mut $t = libc::malloc(size) as *mut $t;
+            read_addr(result as *mut libc::c_void, $addr as libc::uintptr_t, size);
+            println!("{}", *result);
+            libc::free(result as *mut libc::c_void);
+        }
+    };
+
+    ($t:ty, $addr:ident, $hex:ident) => {
+        {
+            let size = std::mem::size_of::<$t>();
+            let result: *mut $t = libc::malloc(size) as *mut $t;
+            read_addr(result as *mut libc::c_void, $addr as libc::uintptr_t, size);
+            println!("{:#x}", *result);
+            libc::free(result as *mut libc::c_void);
+        }
+    };
+
+    ($t:ty, $addr:ident, $count:expr, $zero:expr) => {
+        {
+            let size = std::mem::size_of::<$t>() * $count;
+            let mut result: Vec<$t> = vec![$zero; $count];
             {
-                let size = std::mem::size_of::<$t>();
-                let result: *mut $t = libc::malloc(size) as *mut $t;
-                read_addr(result as *mut libc::c_void, addr as libc::uintptr_t, size);
-                println!("{}", *result);
-                libc::free(result as *mut libc::c_void);
+                let slice: &mut [$t] = &mut result;
+                read_addr(slice.as_mut_ptr() as *mut libc::c_void, $addr as libc::uintptr_t, size);
             }
-        };
+            println!("{:?}", result);
+        }
+    };
+}
 
-        ($t:ty, $hex:expr) => {
-            {
-                let size = std::mem::size_of::<$t>();
-                let result: *mut $t = libc::malloc(size) as *mut $t;
-                read_addr(result as *mut libc::c_void, addr as libc::uintptr_t, size);
-                println!("{:#x}", *result);
-                libc::free(result as *mut libc::c_void);
+
+macro_rules! print_base_type {
+    ($type_name:ident, $addr:ident, $count:expr) => {
+        match $type_name {
+            "char" | "signed char" | "unsigned char" => {
+                if $count == 1 { print_result_as!(libc::c_char, $addr); }
+                else { print_result_as!(libc::c_char, $addr, ($count), 0); }
+            },
+
+            "short" | "signed short" | "short int" | "signed short int" | "short signed" | "short signed int" => {
+                if $count == 1 { print_result_as!(i16, $addr); }
+                else { print_result_as!(i16, $addr, ($count), 0); }
+            },
+            "unsigned short" | "unsigned short int" | "short unsigned" | "short unsigned int" => {
+                if $count == 1 { print_result_as!(u16, $addr); }
+                else { print_result_as!(u16, $addr, ($count), 0); }
+            },
+
+            "int" | "signed int" | "signed" => {
+                if $count == 1 { print_result_as!(i16, $addr); }
+                else { print_result_as!(i16, $addr, ($count), 0); }
+            },
+            "unsigned int" | "unsigned" => {
+                if $count == 1 { print_result_as!(u16, $addr); }
+                else { print_result_as!(u16, $addr, ($count), 0); }
+            },
+
+            "long" | "signed long" | "long int" | "signed long int" | "long signed" | "long signed int" => {
+                if $count == 1 { print_result_as!(i32, $addr); }
+                else { print_result_as!(i32, $addr, ($count), 0); }
+            },
+            "unsigned long" | "unsigned long int" | "long unsigned" | "long unsigned int" => {
+                if $count == 1 { print_result_as!(u32, $addr); }
+                else { print_result_as!(u32, $addr, ($count), 0); }
+            },
+
+            "long long" | "signed long long" | "long long int" | "signed long long int" | "long long signed" | "long long signed int" => {
+                if $count == 1 { print_result_as!(i64, $addr); }
+                else { print_result_as!(i64, $addr, ($count), 0); }
+            },
+            "unsigned long long" | "unsigned long long int" | "long long unsigned" | "long long unsigned int" => {
+                if $count == 1 { print_result_as!(u64, $addr); }
+                else { print_result_as!(u64, $addr, ($count), 0); }
+            },
+
+            "float" => {
+                if $count == 1 { print_result_as!(f32, $addr); }
+                else { print_result_as!(f32, $addr, ($count), 0.0); }
+            },
+            "double" => {
+                if $count == 1 { print_result_as!(f64, $addr); }
+                else { print_result_as!(f64, $addr, ($count), 0.0); }
             }
-        };
-    }
 
-    match type_name {
-        "char" | "signed char" | "unsigned char" => { print_result_as!(libc::c_char); },
+            "*" => {
+                if $count == 1 { print_result_as!(u64, $addr, $addr); }
+                else { print_result_as!(u64, $addr, ($count), 0); }
+            }
 
-        "short" | "signed short" | "short int" | "signed short int" | "short signed" | "short signed int" => { print_result_as!(i16); },
-        "unsigned short" | "unsigned short int" | "short unsigned" | "short unsigned int" => { print_result_as!(u16); },
-
-        "int" | "signed int" | "signed" => { print_result_as!(i16); },
-        "unsigned int" | "unsigned" => { print_result_as!(u16); },
-
-        "long" | "signed long" | "long int" | "signed long int" | "long signed" | "long signed int" => { print_result_as!(i32); },
-        "unsigned long" | "unsigned long int" | "long unsigned" | "long unsigned int" => { print_result_as!(u32); },
-
-        "long long" | "signed long long" | "long long int" | "signed long long int" | "long long signed" | "long long signed int" => { print_result_as!(i64); },
-        "unsigned long long" | "unsigned long long int" | "long long unsigned" | "long long unsigned int" => { print_result_as!(u64); },
-
-        "float" => { print_result_as!(f32); },
-        "double" => { print_result_as!(f64); }
-
-        "*" => { print_result_as!(u64, true); }
-
-        _ => { println!("unknown type"); }
-    }
+            _ => { println!("unknown type"); }
+        }
+    };
 }
 
 
@@ -492,51 +543,16 @@ fn print_struct(offset: &str, varname: &str, type_name: &str, addr: i64, types: 
             print_struct(&new_offset, varname, &dt.base_type, addr, types);
         }
     } else {
-        unsafe { print_variable(type_name, addr); }
+        unsafe { print_base_type!(type_name, addr, 1); }
     }
 }
 
 
 unsafe fn read_ptr(address: u64, count: usize, type_name: &str, types: &HashMap<String, DerivedType>) {
-    macro_rules! print_result_as {
-        ($t:ty, $zero:expr) => {
-            {
-                let size = std::mem::size_of::<$t>() * count;
-                let mut result: Vec<$t> = vec![$zero; count];
-                {
-                    let slice: &mut [$t] = &mut result;
-                    read_addr(slice.as_mut_ptr() as *mut libc::c_void, address as libc::uintptr_t, size);
-                }
-                println!("{:?}", result);
-            }
-        };
-    }
-
     let d_type = types.get(type_name);
 
     if d_type.is_none() {
-        match type_name {
-            "char" | "signed char" | "unsigned char" => { print_result_as!(libc::c_char, 0); },
-
-            "short" | "signed short" | "short int" | "signed short int" | "short signed" | "short signed int" => { print_result_as!(i16, 0); },
-            "unsigned short" | "unsigned short int" | "short unsigned" | "short unsigned int" => { print_result_as!(u16, 0); },
-
-            "int" | "signed int" | "signed" => { print_result_as!(i16, 0); },
-            "unsigned int" | "unsigned" => { print_result_as!(u16, 0); },
-
-            "long" | "signed long" | "long int" | "signed long int" | "long signed" | "long signed int" => { print_result_as!(i32, 0); },
-            "unsigned long" | "unsigned long int" | "long unsigned" | "long unsigned int" => { print_result_as!(u32, 0); },
-
-            "long long" | "signed long long" | "long long int" | "signed long long int" | "long long signed" | "long long signed int" => { print_result_as!(i64, 0); },
-            "unsigned long long" | "unsigned long long int" | "long long unsigned" | "long long unsigned int" => { print_result_as!(u64, 0); },
-
-            "float" => { print_result_as!(f32, 0.0); },
-            "double" => { print_result_as!(f64, 0.0); }
-
-            "*" => { print_result_as!(u64, 0); }
-
-            _ => { println!("unknown type"); }
-        }
+        print_base_type!(type_name, address, (count));
     } else {
         if d_type.unwrap().members.len() > 0 {
             println!("cannot read structs yet"); return;
