@@ -5,6 +5,7 @@ extern crate gimli;
 extern crate fallible_iterator;
 extern crate goblin;
 extern crate libc;
+extern crate hex;
 #[macro_use] extern crate text_io;
 
 
@@ -452,7 +453,7 @@ unsafe fn print_variable(type_name: &str, addr: i64) {
     }
 
     match type_name {
-        "char" | "signed char" | "unsigned char" => { print_result_as!(char); },
+        "char" | "signed char" | "unsigned char" => { print_result_as!(libc::c_char); },
 
         "short" | "signed short" | "short int" | "signed short int" | "short signed" | "short signed int" => { print_result_as!(i16); },
         "unsigned short" | "unsigned short int" | "short unsigned" | "short unsigned int" => { print_result_as!(u16); },
@@ -496,6 +497,55 @@ fn print_struct(offset: &str, varname: &str, type_name: &str, addr: i64, types: 
 }
 
 
+unsafe fn read_ptr(address: u64, count: usize, type_name: &str, types: &HashMap<String, DerivedType>) {
+    macro_rules! print_result_as {
+        ($t:ty, $zero:expr) => {
+            {
+                let size = std::mem::size_of::<$t>() * count;
+                let mut result: Vec<$t> = vec![$zero; count];
+                {
+                    let slice: &mut [$t] = &mut result;
+                    read_addr(slice.as_mut_ptr() as *mut libc::c_void, address as libc::uintptr_t, size);
+                }
+                println!("{:?}", result);
+            }
+        };
+    }
+
+    let d_type = types.get(type_name);
+
+    if d_type.is_none() {
+        match type_name {
+            "char" | "signed char" | "unsigned char" => { print_result_as!(libc::c_char, 0); },
+
+            "short" | "signed short" | "short int" | "signed short int" | "short signed" | "short signed int" => { print_result_as!(i16, 0); },
+            "unsigned short" | "unsigned short int" | "short unsigned" | "short unsigned int" => { print_result_as!(u16, 0); },
+
+            "int" | "signed int" | "signed" => { print_result_as!(i16, 0); },
+            "unsigned int" | "unsigned" => { print_result_as!(u16, 0); },
+
+            "long" | "signed long" | "long int" | "signed long int" | "long signed" | "long signed int" => { print_result_as!(i32, 0); },
+            "unsigned long" | "unsigned long int" | "long unsigned" | "long unsigned int" => { print_result_as!(u32, 0); },
+
+            "long long" | "signed long long" | "long long int" | "signed long long int" | "long long signed" | "long long signed int" => { print_result_as!(i64, 0); },
+            "unsigned long long" | "unsigned long long int" | "long long unsigned" | "long long unsigned int" => { print_result_as!(u64, 0); },
+
+            "float" => { print_result_as!(f32, 0.0); },
+            "double" => { print_result_as!(f64, 0.0); }
+
+            "*" => { print_result_as!(u64, 0); }
+
+            _ => { println!("unknown type"); }
+        }
+    } else {
+        if d_type.unwrap().members.len() > 0 {
+            println!("cannot read structs yet"); return;
+        }
+        read_ptr(address, count, &d_type.unwrap().base_type, types);
+    }
+}
+
+
 unsafe extern "C" fn exc_callback(
     scope_p: *mut Scope,
     types_p: *mut HashMap<String, DerivedType>,
@@ -533,9 +583,40 @@ unsafe extern "C" fn exc_callback(
             "print" | "show" | "get" => {
                 if command.len() < 2 {
                     println!("command '{}' expects at least one argument", verb);
+                    println!("Usage: {} <variable-name>", verb);
                     continue;
                 }
             },
+            "read" => {
+                if command.len() < 4 {
+                    println!("command '{}' expects at least three arguments", verb);
+                    println!("Usage: {} <address> <count> <type>", verb);
+                    continue;
+                }
+
+                let address_str = command[1].trim_start_matches("0x");
+                let address = match u64::from_str_radix(&address_str, 16) {
+                    Ok(r) => r,
+                    Err(err) => {
+                        println!("error parsing address: {}", err);
+                        continue;
+                    }
+                };
+                let count_str = command[2];
+                let count = match usize::from_str_radix(&count_str, 10) {
+                    Ok(r) => r,
+                    Err(err) => {
+                        println!("error parsing count: {}", err);
+                        continue;
+                    }
+                };
+                let type_name = command[3].to_string();
+
+                read_ptr(address, count, &type_name, &types);
+
+                continue;
+            }
+
             other => { println!("unknown command '{}'", other); continue; }
         }
 

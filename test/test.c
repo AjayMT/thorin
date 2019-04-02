@@ -39,9 +39,7 @@ int main(int argc, char *argv[])
   func();
   struct my_type my_obj = { .val = 42, .baz = 'F', .loc = { .x = 12, .y = 13 } };
   float *ppi = &pi;
-
-  printf("hello\n");
-
+  char *str = "hello";
   uint64_t num = 42;
 
   __builtin_trap();
