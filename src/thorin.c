@@ -1,6 +1,6 @@
 
 // thorin.c
-// 
+//
 // A (somewhat) platform-agnostic interface for tracing and interacting
 // with programs on UNIX-like systems. Currently only supports x86_64
 // linux and MacOS.
@@ -60,7 +60,7 @@ static mach_port_t global_task_exc; // exception port through which we receive e
 // this function "replies" to a message received by a client (the kernel)
 extern boolean_t mach_exc_server (mach_msg_header_t *msg, mach_msg_header_t *reply);
 
-// this function does nothing but it needs to exist for the mach 
+// this function does nothing but it needs to exist for the mach
 // exception server interface
 kern_return_t catch_mach_exception_raise_state (
   mach_port_t exception_port,
@@ -75,7 +75,7 @@ kern_return_t catch_mach_exception_raise_state (
   )
 { return KERN_FAILURE; }
 
-// this function does nothing but it needs to exist for the mach 
+// this function does nothing but it needs to exist for the mach
 // exception server interface
 kern_return_t catch_mach_exception_raise (
   mach_port_t exception_port,

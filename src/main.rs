@@ -1,12 +1,19 @@
 
 #![allow(improper_ctypes)]
 
+// thorin/main.rs
+//
+// The thorin debugger -- it ain't much, but it's honest work.
+//
+// author: Ajay Tatachar <ajaymt2@illinois.edu>
+
 extern crate gimli;
 extern crate fallible_iterator;
 extern crate object;
 extern crate memmap;
 extern crate libc;
 extern crate hex;
+extern crate rand;
 #[macro_use] extern crate text_io;
 
 
@@ -16,8 +23,13 @@ use fallible_iterator::FallibleIterator;
 use std::io::Write;
 use std::path::Path;
 use std::collections::HashMap;
+use rand::Rng;
 
 
+// these are the C functions defined in thorin.c that do all of the actual
+// system-call stuff.
+// Since rust forbids global mutable state, we need to route the `scope` and `types`
+// globals through the C code.
 extern {
     fn setup(
         child: *const std::os::raw::c_char,
@@ -29,6 +41,8 @@ extern {
 }
 
 
+// A variable has a name, an offset from the stack base pointer or struct base
+// and a type name.
 #[allow(unused)]
 #[derive(Clone, Debug)]
 struct Variable {
@@ -38,6 +52,9 @@ struct Variable {
 }
 
 
+// A scope has an optional name (if it is a function), a set of variables, a set
+// of child scopes, and a program counter range to find the scope within the target
+// process (based on the instruction pointer, i.e RIP register since we're on x86_64)
 #[allow(unused)]
 #[derive(Clone)]
 struct Scope {
@@ -49,6 +66,8 @@ struct Scope {
 }
 
 
+// A derived type is either a typedef or struct. It has a name and one of a base
+// type (for typedefs) or list of members (for structs)
 #[allow(unused)]
 struct DerivedType {
     name: String,
@@ -57,6 +76,7 @@ struct DerivedType {
 }
 
 
+// this macro iterates through compilation units in a DWARF file
 macro_rules! dwarf_iter_units {
     ($dwarf:ident, $unit:ident, $body:block) => {
         {
@@ -77,6 +97,8 @@ macro_rules! dwarf_iter_units {
 }
 
 
+// this macro iterates through DIEs (debugging information entries) in all compilation
+// units in a DWARF file
 macro_rules! dwarf_iter_entries {
     ($dwarf:ident, $unit:ident, $d_depth:ident, $entry:ident, $body:block) => {
         {
@@ -90,6 +112,7 @@ macro_rules! dwarf_iter_entries {
 }
 
 
+// this macro finds a specific DWARF attribute in a DIE
 macro_rules! dwarf_find_attr {
     ($entry:ident, $attr_value_ident:ident, $attr_name_expr:expr, $body:block) => {
         {
@@ -107,6 +130,7 @@ macro_rules! dwarf_find_attr {
 }
 
 
+// this function constructs a Variable struct out of a DIE
 fn process_variable<'a, 'b>(
     dwarf: &'a gimli::Dwarf<gimli::EndianSlice<'b, gimli::LittleEndian>>,
     unit: &'a gimli::Unit<gimli::EndianSlice<'b, gimli::LittleEndian>>,
@@ -190,6 +214,7 @@ fn process_variable<'a, 'b>(
 }
 
 
+// this function recursively constructs a scope out of a set of DIEs
 fn construct_scope<'a, 'b>(
     dwarf: &'a gimli::Dwarf<gimli::EndianSlice<'b, gimli::LittleEndian>>,
     unit: &'a gimli::Unit<gimli::EndianSlice<'b, gimli::LittleEndian>>,
@@ -242,6 +267,7 @@ fn construct_scope<'a, 'b>(
 }
 
 
+// this function constructs the global scope struct starting from the root DIE
 fn construct_global_scope<'a>(
     dwarf: &'a gimli::Dwarf<gimli::EndianSlice<gimli::LittleEndian>>
 ) -> Scope {
@@ -265,6 +291,7 @@ fn construct_global_scope<'a>(
 }
 
 
+// this function constructs the set of derived types from the root DIEs
 fn get_types<'a>(dwarf: &'a gimli::Dwarf<gimli::EndianSlice<gimli::LittleEndian>>) -> HashMap<String, DerivedType> {
     let mut types: HashMap<String, DerivedType> = HashMap::new();
 
@@ -331,8 +358,8 @@ fn get_types<'a>(dwarf: &'a gimli::Dwarf<gimli::EndianSlice<gimli::LittleEndian>
 }
 
 
+// this is the entry point of the program
 fn main() {
-    // open file
     let exec_path = std::env::args().nth(1).expect("Missing argument");
     let mut dsym_path = exec_path.clone();
     #[cfg(target_os = "macos")]
@@ -364,7 +391,6 @@ fn main() {
         }
     };
 
-    // parse Mach-O
     macro_rules! load_section {
         ($x:ident, $y:ident) => (
             gimli::$x::new(
@@ -374,7 +400,6 @@ fn main() {
         )
     }
 
-    // parse dwarf sections with gimli
     let s_debug_info = parsed_file.section_by_name(".debug_info")
         .expect("No .debug_info section found")
         .data();
@@ -414,6 +439,11 @@ fn main() {
 }
 
 
+// this function tries to find which scope we're inside of in the suspended
+// target process based on the instruction pointer and the low_pc and high_pc
+// attributes of the scope structs constructed earlier
+// takes O(logn) time because the scope struct is essentially a
+// searchable BTree -- CS225 ftw :)
 fn construct_context(
     scope: &Scope,
     variables: &mut HashMap<String, Variable>,
@@ -438,6 +468,7 @@ fn construct_context(
 }
 
 
+// this macro reads and prints a variable at a specific address in the child process
 macro_rules! print_result_as {
     ($t:ty, $addr:ident) => {
         {
@@ -473,6 +504,7 @@ macro_rules! print_result_as {
 }
 
 
+// this macro resolves the (base) type of a variable and prints it
 macro_rules! print_base_type {
     ($type_name:ident, $addr:ident, $count:expr) => {
         match $type_name {
@@ -537,6 +569,7 @@ macro_rules! print_base_type {
 }
 
 
+// this macro recursively reolves the (derived) type of a variable and prints it
 fn print_struct(offset: &str, varname: &str, type_name: &str, addr: i64, types: &HashMap<String, DerivedType>) {
     print!("{}{} {}: ", offset, type_name, varname);
     let d_type = types.get(type_name);
@@ -557,6 +590,7 @@ fn print_struct(offset: &str, varname: &str, type_name: &str, addr: i64, types: 
 }
 
 
+// this function reads an arbitrary address in the child process as a specific type and prints the results
 unsafe fn read_ptr(address: u64, count: usize, type_name: &str, types: &HashMap<String, DerivedType>) {
     let d_type = types.get(type_name);
 
@@ -571,6 +605,8 @@ unsafe fn read_ptr(address: u64, count: usize, type_name: &str, types: &HashMap<
 }
 
 
+// this is the exception callback -- it gets called when the target process is suspended
+// and starts the main debugger loop
 unsafe extern "C" fn exc_callback(
     scope_p: *mut Scope,
     types_p: *mut HashMap<String, DerivedType>,
@@ -607,6 +643,17 @@ unsafe extern "C" fn exc_callback(
 
         match verb.as_ref() {
             "exit" | "quit" => { break; },
+            "help" => {
+                println!("Commands:");
+                println!("  (print|show|get) <variable-name>:  Print the value of a variable.");
+                println!("  read <address> <count> <type>:     Read the value at <address>. <type>");
+                println!("                                     is the type of the value, <count> is the");
+                println!("                                     number of values to read.");
+                println!("  help:                              Print this help message.");
+                println!("  (exit|quit):                       Quit thorin.");
+
+                continue;
+            },
             "print" | "show" | "get" => {
                 if command.len() < 2 {
                     println!("command '{}' expects at least one argument", verb);
@@ -659,6 +706,16 @@ unsafe extern "C" fn exc_callback(
 
         print_struct("", &varname, &type_name, addr, &types);
     }
+
+    println!("");
+    let mut rng = rand::thread_rng();
+    match rng.gen_range(0, 4) {
+        0 => { println!("\"If more people valued home, above gold, this world would be a merrier place...\""); },
+        1 => { println!("\"We are sons of Durin. And Durin's Folk do not flee from a fight.\""); },
+        2 => { println!("\"Those who have lived through dragon fire should rejoice. They have much to be grateful for.\""); },
+        _ => { println!("\"If this is to end in fire, then we will all burn together.\""); }
+    }
+    println!("");
 
     Box::from_raw(scope_p);
     Box::from_raw(types_p);
