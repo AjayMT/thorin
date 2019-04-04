@@ -1,4 +1,15 @@
 
+// thorin.c
+// 
+// A (somewhat) platform-agnostic interface for tracing and interacting
+// with programs on UNIX-like systems. Currently only supports x86_64
+// linux and MacOS.
+//
+// author: Ajay Tatachar <ajaymt2@illinois.edu>
+
+#ifndef _THORIN_C
+#define _THORIN_C
+
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -24,6 +35,10 @@
 #include <string.h>
 #include <unistd.h>
 
+// we use this struct to read register information of a ptraced
+// process on linux.
+// more generally, it is an IO-vector which is a packaged array+length
+// datatype, used by many IO-related syscalls
 struct iovec {
   void *iov_base;
   unsigned int iov_len;
@@ -32,18 +47,21 @@ struct iovec {
 #endif
 
 typedef void (*exc_callback)(void*, void*, uintptr_t, uintptr_t);
-static exc_callback global_cb;
-static void *global_scope;
-static void *global_types;
+static exc_callback global_cb; // rust callback
+static void *global_scope;     // the program's scope tree
+static void *global_types;     // type information i.e typedefs/enums/structs
 
 
 #ifdef __APPLE__
 
-static mach_port_t global_task;
-static mach_port_t global_task_exc;
+static mach_port_t global_task;     // task port through which we talk to the child process
+static mach_port_t global_task_exc; // exception port through which we receive exception info
 
+// this function "replies" to a message received by a client (the kernel)
 extern boolean_t mach_exc_server (mach_msg_header_t *msg, mach_msg_header_t *reply);
 
+// this function does nothing but it needs to exist for the mach 
+// exception server interface
 kern_return_t catch_mach_exception_raise_state (
   mach_port_t exception_port,
   exception_type_t exception,
@@ -57,6 +75,8 @@ kern_return_t catch_mach_exception_raise_state (
   )
 { return KERN_FAILURE; }
 
+// this function does nothing but it needs to exist for the mach 
+// exception server interface
 kern_return_t catch_mach_exception_raise (
   mach_port_t exception_port,
   mach_port_t thread,
@@ -67,6 +87,11 @@ kern_return_t catch_mach_exception_raise (
   )
 { return KERN_FAILURE; }
 
+// this function handles exceptions raised in the child process/task
+// it receives information about the thread that raised the exception,
+// including register state
+// RBP and RIP registers are passed to the rust callback so it knows
+// where the program stopped and where to look for variables
 kern_return_t catch_mach_exception_raise_state_identity (
   mach_port_t exception_port,
   mach_port_t thread,
@@ -89,8 +114,11 @@ kern_return_t catch_mach_exception_raise_state_identity (
 }
 
 #elif __linux__
-static pid_t global_child = 0;
 
+static pid_t global_child = 0; // pid of child process
+
+// this function calls the rust callback with the child's RBP and RIP
+// registers whenever the child is suspended
 void perform_callback(pid_t child)
 {
   struct user_regs_struct regs;
@@ -105,23 +133,29 @@ void perform_callback(pid_t child)
     return;
   }
 
-  global_cb(global_scope, global_types, regs.rbp, regs.rip);
+  // not sure why rbp needs to be offset by 16. this is probably not portable
+  global_cb(global_scope, global_types, regs.rbp + (2 * sizeof(long)), regs.rip);
 }
 
+// this function gets called in the child process after forking
+// it tells the parent to trace it and then execves the target
 void setup_inferior(const char *target, char *argv[])
 {
   ptrace(PTRACE_TRACEME, 0, NULL, NULL);
   execv(target, argv);
 }
 
+// this function attaches to the child process and begins tracing it
+// we are ignoring SIGTRAP because it is sent when the child calls execve
+// which should not start the debugger
 void attach_to_inferior(pid_t child) {
-  while(1) {
+  while (1) {
     int status;
     waitpid(child, &status, 0);
 
-    if (WIFSTOPPED(status) && WSTOPSIG(status) == SIGTRAP) {
+    if (WIFSTOPPED(status) && WSTOPSIG(status) == SIGTRAP)
       ptrace(PTRACE_CONT, child, NULL, NULL);
-    } else if (WIFEXITED(status)) {
+    else if (WIFEXITED(status)) {
       printf("Child process exited\n");
       return;
     } else {
@@ -131,8 +165,10 @@ void attach_to_inferior(pid_t child) {
     }
   }
 }
+
 #endif
 
+// this function initializes global state and starts the child process
 void setup(const char *target, exc_callback cb, void *scope, void *types)
 {
   global_cb = cb;
@@ -197,7 +233,6 @@ void setup(const char *target, exc_callback cb, void *scope, void *types)
     task_exception_port,
     0
     );
-
 #elif __linux__
   do {
     child = fork();
@@ -215,7 +250,9 @@ void setup(const char *target, exc_callback cb, void *scope, void *types)
 #endif
 }
 
-
+// this function reads the target process's memory into a buffer
+// in the parent/tracing process
+// `address` is the location in the target process's address space
 void read_addr(void *buffer, uintptr_t address, size_t size)
 {
 #ifdef __APPLE__
@@ -265,3 +302,5 @@ void read_addr(void *buffer, uintptr_t address, size_t size)
   }
 #endif
 }
+
+#endif

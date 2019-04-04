@@ -577,6 +577,8 @@ unsafe extern "C" fn exc_callback(
     rbp: libc::uintptr_t,
     rip: libc::uintptr_t
 ) {
+    println!("Process suspended.\n");
+
     let mut variables: HashMap<String, Variable> = HashMap::new();
     let mut scopes: Vec<String> = Vec::new();
     let scope = &(*scope_p);
