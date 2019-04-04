@@ -19,6 +19,7 @@
 #include <sys/user.h>
 #include <sys/uio.h>
 #include <linux/ptrace.h>
+#include <elf.h>
 #include <errno.h>
 #include <string.h>
 
@@ -82,6 +83,7 @@ kern_return_t catch_mach_exception_raise_state_identity (
 }
 
 #elif __linux__
+
 void perform_callback(pid_t child)
 {
   struct user_regs_struct regs;
@@ -92,13 +94,14 @@ void perform_callback(pid_t child)
 
   long r = ptrace(PTRACE_GETREGSET, child, 1, &iov);
   if (r == -1) {
-    printf("PTRACE_GETREGS failed: %s\n", strerror(errno));
+    printf("PTRACE_GETREGSET failed: %s\n", strerror(errno));
     return;
   }
 
   printf("%lu rbp: %llu rip: %llu\n", iov.iov_len, regs.rbp, regs.rip);
   global_cb(global_scope, global_types, regs.rbp, regs.rip);
 }
+
 #endif
 
 void setup(const char *target, exc_callback cb, void *scope, void *types)
@@ -175,8 +178,10 @@ void setup(const char *target, exc_callback cb, void *scope, void *types)
     0
     );
 #elif __linux__
+
   waitpid(child, NULL, 0);
   perform_callback(child);
+
 #endif
 }
 
