@@ -240,18 +240,19 @@ void read_addr(void *buffer, uintptr_t address, size_t size)
   size_t nread = 0;
   errno = 0;
   for (nread = 0; nread < size; nread += sizeof(long)) {
-    const char *ptrace_address = target_address + nread;
+    const char *ptrace_address = (char *)address + nread;
     long ptraced_long = ptrace(PTRACE_PEEKDATA, global_child, ptrace_address, NULL);
 
     if (UNLIKELY(ptraced_long == -1L && errno != 0)) {
       if (errno == EIO || errno == EFAULT) {
-        for (int j = 1, errno = 0; j < sizeof(long); j++, errno = 0) {
-          ptraced_long = ptrace(PTRACE_PEEKDATA, peekbuf.pid, ptrace_address - j, NULL);
+        int j;
+        for (j = 1, errno = 0; j < sizeof(long); j++, errno = 0) {
+          ptraced_long = ptrace(PTRACE_PEEKDATA, global_child, ptrace_address - j, NULL);
           if ((ptraced_long == -1L) && (errno == EIO || errno == EFAULT))
             continue;
 
           uint8_t* new_memory_ptr = (uint8_t*)(&ptraced_long) + j;
-          memcpy(dest_buffer + nread, new_memory_ptr, sizeof(long) - j);
+          memcpy(buffer + nread, new_memory_ptr, sizeof(long) - j);
           nread += sizeof(long) - j;
           break;
         }
