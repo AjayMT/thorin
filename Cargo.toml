@@ -4,6 +4,8 @@ build = "build.rs"
 name = "thorin"
 version = "0.1.0"
 authors = ["Ajay MT <ajaymt2@illinois.edu>"]
+description = "a debugger"
+license = "MIT"
 
 [dependencies]
 gimli = "0.17.0"
