@@ -2,6 +2,8 @@
 # thorin -- the DWARF debugger
 `thorin` is a simple debugger for linux and MacOS, like `gdb`'s (very) little brother. It currently only works on C programs and x86_64 architectures.
 
+[![asciicast](https://asciinema.org/a/FJC8CHxxWius1RjN7OYQ286Cg.svg)](https://asciinema.org/a/FJC8CHxxWius1RjN7OYQ286Cg)
+
 `thorin` is still in development -- see the TODO section.
 
 ## Installation
