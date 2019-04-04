@@ -3,14 +3,16 @@
 
 extern crate gimli;
 extern crate fallible_iterator;
-extern crate goblin;
+extern crate object;
+extern crate memmap;
 extern crate libc;
 extern crate hex;
 #[macro_use] extern crate text_io;
 
 
+use object::Object;
+use object::ObjectSection;
 use fallible_iterator::FallibleIterator;
-use std::io::Read;
 use std::io::Write;
 use std::path::Path;
 use std::collections::HashMap;
@@ -340,65 +342,55 @@ fn main() {
     }
 
     println!("loading DWARF file at {}...", dsym_path);
-
-    let mut file = match std::fs::File::open(&dsym_path) {
+    let file = match std::fs::File::open(&dsym_path) {
         Ok(file) => file,
         Err(err) => {
-            println!("Error opening file '{}': {}", dsym_path, err);
+            println!("Error opening file '{}': {}", &dsym_path, err);
+            return;
+        }
+    };
+    let mmapped_file = match unsafe { memmap::Mmap::map(&file) } {
+        Ok(mmapped_file) => mmapped_file,
+        Err(err) => {
+            println!("Could not map file '{}': {}", &dsym_path, err);
+            return;
+        }
+    };
+    let parsed_file = match object::File::parse(&*mmapped_file) {
+        Ok(parsed_file) => parsed_file,
+        Err(err) => {
+            println!("Error parsing file '{}': {}", &dsym_path, err);
             return;
         }
     };
 
     // parse Mach-O
-    let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer).unwrap();
-
-    // read dwarf sections
-    let mut dwarf_sections: HashMap<String, &[u8]> = HashMap::new();
-
-    #[cfg(target_os = "linux")]
-    {
-        let data = goblin::object::ElfFile::parse(&buffer).unwrap();
-        for segment in data.segments() {
-            println!("{:?}", segment);
-        }
-
-        return;
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        let data = goblin::mach::MachO::parse(&buffer, 0).unwrap();
-        for segment_sections in data.segments.sections() {
-            for section in segment_sections {
-                let (s, s_data) = section.unwrap();
-                let s_segname = std::str::from_utf8(&s.segname)
-                    .unwrap()
-                    .to_string();
-                let s_sectname = std::str::from_utf8(&s.sectname)
-                    .unwrap()
-                    .to_string();
-                if s_segname.trim_matches(char::from(0)) == "__DWARF" {
-                    dwarf_sections.insert(s_sectname.trim_matches(char::from(0)).to_string(), &s_data);
-                }
-            }
-        }
-    }
-
     macro_rules! load_section {
-        ($x:ident, $s:expr) => (
+        ($x:ident, $y:ident) => (
             gimli::$x::new(
-                dwarf_sections.get($s).expect("section not found"),
+                &$y,
                 gimli::LittleEndian
             );
         )
     }
 
     // parse dwarf sections with gimli
-    let debug_info = load_section!(DebugInfo, "__debug_info");
-    let debug_abbrev = load_section!(DebugAbbrev, "__debug_abbrev");
-    let debug_line = load_section!(DebugLine, "__debug_line");
-    let debug_str = load_section!(DebugStr, "__debug_str");
+    let s_debug_info = parsed_file.section_by_name(".debug_info")
+        .expect("No .debug_info section found")
+        .data();
+    let s_debug_abbrev = parsed_file.section_by_name(".debug_abbrev")
+        .expect("No .debug_abbrev section found")
+        .data();
+    let s_debug_str = parsed_file.section_by_name(".debug_str")
+        .expect("No .debug_str section found")
+        .data();
+    let s_debug_line = parsed_file.section_by_name(".debug_line")
+        .expect("No .debug_line section found")
+        .data();
+    let debug_info = load_section!(DebugInfo, s_debug_info);
+    let debug_abbrev = load_section!(DebugAbbrev, s_debug_abbrev);
+    let debug_line = load_section!(DebugLine, s_debug_line);
+    let debug_str = load_section!(DebugStr, s_debug_str);
     let dwarf = gimli::Dwarf {
         debug_info,
         debug_abbrev,
