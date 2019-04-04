@@ -14,14 +14,20 @@
 #elif __linux__
 
 #include <sys/types.h>
-#include <sys/ptrace.h>
 #include <sys/wait.h>
+#include <sys/ptrace.h>
 #include <sys/user.h>
-#include <sys/uio.h>
 #include <linux/ptrace.h>
 #include <elf.h>
+#include <signal.h>
 #include <errno.h>
 #include <string.h>
+#include <unistd.h>
+
+struct iovec {
+  void *iov_base;
+  unsigned int iov_len;
+};
 
 #endif
 
@@ -83,36 +89,63 @@ kern_return_t catch_mach_exception_raise_state_identity (
 }
 
 #elif __linux__
+static pid_t global_child = 0;
 
 void perform_callback(pid_t child)
 {
   struct user_regs_struct regs;
-  memset(&regs, 0, sizeof(struct user_regs_struct));
+  memset(&regs, 0, sizeof(regs));
   struct iovec iov;
   iov.iov_base = &regs;
-  iov.iov_len = sizeof(struct user_regs_struct);
+  iov.iov_len = sizeof(regs);
 
-  long r = ptrace(PTRACE_GETREGSET, child, 1, &iov);
+  long r = ptrace(PTRACE_GETREGSET, child, NT_PRSTATUS, &iov);
   if (r == -1) {
     printf("PTRACE_GETREGSET failed: %s\n", strerror(errno));
     return;
   }
 
-  printf("%lu rbp: %llu rip: %llu\n", iov.iov_len, regs.rbp, regs.rip);
   global_cb(global_scope, global_types, regs.rbp, regs.rip);
 }
 
+void setup_inferior(const char *target, char *argv[])
+{
+  ptrace(PTRACE_TRACEME, 0, NULL, NULL);
+  execv(target, argv);
+}
+
+void attach_to_inferior(pid_t child) {
+  while(1) {
+    int status;
+    waitpid(child, &status, 0);
+
+    if (WIFSTOPPED(status) && WSTOPSIG(status) == SIGTRAP) {
+      ptrace(PTRACE_CONT, child, NULL, NULL);
+    } else if (WIFEXITED(status)) {
+      printf("Child process exited\n");
+      return;
+    } else {
+      global_child = child;
+      perform_callback(child);
+      return;
+    }
+  }
+}
 #endif
 
 void setup(const char *target, exc_callback cb, void *scope, void *types)
 {
+  global_cb = cb;
+  global_scope = scope;
+  global_types = types;
+
   pid_t child = 0;
+
+#ifdef __APPLE__
   posix_spawnattr_t attr;
   posix_spawnattr_init(&attr);
   posix_spawnattr_setflags(&attr, 0x100); // disable ASLR on MacOS
   posix_spawnp(&child, target, NULL, &attr, NULL, NULL);
-
-#ifdef __APPLE__
 
   mach_port_t task;
   mach_port_t task_exception_port;
@@ -156,19 +189,6 @@ void setup(const char *target, exc_callback cb, void *scope, void *types)
   global_task = task;
   global_task_exc = task_exception_port;
 
-#elif __linux__
-  long r = ptrace(PTRACE_ATTACH, child, NULL, NULL);
-  if (r == -1) {
-    printf("PTRACE_ATTACH failed: %s", strerror(errno));
-    return;
-  }
-#endif
-
-  global_cb = cb;
-  global_scope = scope;
-  global_types = types;
-
-#ifdef __APPLE__
   size_t req_size = sizeof(union __RequestUnion__mach_exc_subsystem);
   size_t rep_size = sizeof(union __ReplyUnion__mach_exc_subsystem);
   mach_msg_server_once(
@@ -177,11 +197,21 @@ void setup(const char *target, exc_callback cb, void *scope, void *types)
     task_exception_port,
     0
     );
+
 #elif __linux__
-
-  waitpid(child, NULL, 0);
-  perform_callback(child);
-
+  do {
+    child = fork();
+    switch (child) {
+    case 0:
+      setup_inferior(target, NULL);
+      break;
+    case -1:
+      break;
+    default:
+      attach_to_inferior(child);
+      break;
+    }
+  } while (child == -1 && errno == EAGAIN);
 #endif
 }
 
@@ -198,6 +228,6 @@ void read_addr(void *buffer, uintptr_t address, size_t size)
     return;
   }
 #elif __linux__
-  // TODO
+  ptrace(PTRACE_PEEKDATA, global_child, NULL, NULL);
 #endif
 }

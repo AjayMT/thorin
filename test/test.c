@@ -42,7 +42,12 @@ int main(int argc, char *argv[])
   char *str = "hello";
   uint64_t num = 42;
 
+#ifdef __APPLE__
   __builtin_trap();
+#elif __linux__
+  int *n = NULL;
+  *n = 12;
+#endif
 
   return 0;
 }
