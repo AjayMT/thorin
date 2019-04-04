@@ -43,7 +43,7 @@ There is no real reason to use `thorin` over gdb, lldb or other similar more pow
 1. I wanted to learn Rust.
 2. It was a fun exercise in system programming.
 
-I chose the name 'thorin' because this program reads DWARF files (the predominant format for debugging information in object files).
+I chose the name 'thorin' because this program reads DWARF files (the predominant format for debugging information).
 
 ## TODO
 - fix the CLI
