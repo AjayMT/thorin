@@ -333,8 +333,11 @@ fn main() {
     // open file
     let exec_path = std::env::args().nth(1).expect("Missing argument");
     let mut dsym_path = exec_path.clone();
-    dsym_path.push_str(".dSYM/Contents/Resources/DWARF/");
-    dsym_path.push_str(Path::new(&exec_path).file_name().unwrap().to_str().unwrap());
+    #[cfg(target_os = "macos")]
+    {
+        dsym_path.push_str(".dSYM/Contents/Resources/DWARF/");
+        dsym_path.push_str(Path::new(&exec_path).file_name().unwrap().to_str().unwrap());
+    }
 
     println!("loading DWARF file at {}...", dsym_path);
 
@@ -349,21 +352,35 @@ fn main() {
     // parse Mach-O
     let mut buffer = Vec::new();
     file.read_to_end(&mut buffer).unwrap();
-    let data = goblin::mach::MachO::parse(&buffer, 0).unwrap();
 
     // read dwarf sections
     let mut dwarf_sections: HashMap<String, &[u8]> = HashMap::new();
-    for segment_sections in data.segments.sections() {
-        for section in segment_sections {
-            let (s, s_data) = section.unwrap();
-            let s_segname = std::str::from_utf8(&s.segname)
-                .unwrap()
-                .to_string();
-            let s_sectname = std::str::from_utf8(&s.sectname)
-                .unwrap()
-                .to_string();
-            if s_segname.trim_matches(char::from(0)) == "__DWARF" {
-                dwarf_sections.insert(s_sectname.trim_matches(char::from(0)).to_string(), &s_data);
+
+    #[cfg(target_os = "linux")]
+    {
+        let data = goblin::object::ElfFile::parse(&buffer).unwrap();
+        for segment in data.segments() {
+            println!("{:?}", segment);
+        }
+
+        return;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let data = goblin::mach::MachO::parse(&buffer, 0).unwrap();
+        for segment_sections in data.segments.sections() {
+            for section in segment_sections {
+                let (s, s_data) = section.unwrap();
+                let s_segname = std::str::from_utf8(&s.segname)
+                    .unwrap()
+                    .to_string();
+                let s_sectname = std::str::from_utf8(&s.sectname)
+                    .unwrap()
+                    .to_string();
+                if s_segname.trim_matches(char::from(0)) == "__DWARF" {
+                    dwarf_sections.insert(s_sectname.trim_matches(char::from(0)).to_string(), &s_data);
+                }
             }
         }
     }
