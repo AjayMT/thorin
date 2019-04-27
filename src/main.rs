@@ -569,7 +569,7 @@ macro_rules! print_base_type {
 }
 
 
-// this macro recursively reolves the (derived) type of a variable and prints it
+// this function recursively resolves the (derived) type of a variable and prints it
 fn print_struct(offset: &str, varname: &str, type_name: &str, addr: i64, types: &HashMap<String, DerivedType>) {
     print!("{}{} {}: ", offset, type_name, varname);
     let d_type = types.get(type_name);
